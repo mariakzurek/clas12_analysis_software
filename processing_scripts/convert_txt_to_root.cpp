@@ -169,6 +169,7 @@ int main(int argc, char *argv[]) {
         cout << " <script_index> = 4 for dvcs (epgammaX)" << endl;
         cout << " <script_index> = 5 for eppi0" << endl;
         cout << " <script_index> = 6 for calibration" << endl;
+        cout << " <script_index> = 7 for ML PID training (processing_mc_pid_training.groovy)" << endl;
         return 1;
     }
     
@@ -268,6 +269,36 @@ int main(int argc, char *argv[]) {
     double traj_x_7, traj_y_7, traj_z_7, traj_edge_7;
     double traj_x_12, traj_y_12, traj_z_12, traj_edge_12;
     double ft_energy, ft_x, ft_y, ft_z, ft_radius;
+
+    // Additional variables for ML PID training script (script_index == 7) — 53 columns.
+    // Event-level: runnum, evnum, helicity, Q2, W, x, y all declared above.  nu is new.
+    // (e_p, e_theta, e_phi, vz_e removed from this script's output.)
+    double nu;
+    // Per-track kinematics (cols 9-15)
+    int    pid_h, sector_h, status_h;
+    double p_h, theta_h, phi_h, vz_h;
+    // ML features: beta, chi2pid (cols 16-17)
+    double beta_h, chi2pid_h;
+    // FTOF layer 1A/1B and layer 2 (cols 18-23, 34-36)
+    double ftof_energy_1A, ftof_energy_1B;
+    double ftof_time_1A,   ftof_time_1B;
+    double ftof_path_1A,   ftof_path_1B;
+    double ftof_energy_2,  ftof_time_2,  ftof_path_2;
+    // ECAL ECin/ECout (cols 24-29) and PCAL (cols 31-33)
+    double ecin_energy,  ecout_energy;
+    double ecin_time,    ecout_time;
+    double ecin_path,    ecout_path;
+    double pcal_energy,  pcal_time,    pcal_path;
+    // HTCC (col 30)
+    double nphe_htcc;
+    // RICH variables — all stored as double (groovy writes via double[] with -9999.0 sentinel)
+    // cols 37-50
+    double rich_emilay, rich_emico, rich_emqua, rich_best_PID;
+    double rich_RQ, rich_ReQ, rich_el_logl, rich_pi_logl, rich_k_logl, rich_pr_logl;
+    double rich_best_ch, rich_best_c2, rich_best_RL, rich_best_ntot;
+    // MC truth (cols 51-53): pid fields stored as int (groovy getInt), quality as double
+    int    mc_matching_pid_i, mc_parent_pid_i;
+    double mc_match_quality;
 
     // Case for zero hadrons (inclusive)
     if (script_index == 0 && is_mc == 0) {
@@ -1129,6 +1160,81 @@ int main(int argc, char *argv[]) {
         tree->Branch("ft_radius", &ft_radius, "ft_radius/D");
     }
 
+    // ── Case for ML PID training script (script_index == 7) ──────────────────
+    // 53 columns total.  is_mc=1 for clasdis MC; is_mc=0 for real data.
+    // The groovy always writes all 53 columns regardless of is_mc; MC-truth
+    // columns (51-53) are -9999 when run on real data.  Both paths use the
+    // same branch layout.
+    // Branch names match the groovy's column-map println exactly.
+    // RICH fields stored as /D because extractRICH() returns double[] and the
+    // groovy writes them via StringBuilder with a -9999.0 sentinel.
+    // mc_matching_pid and mc_parent_pid stored as /I (groovy getInt; written as integer tokens).
+    if (script_index == 7 && (is_mc == 0 || is_mc == 1)) {
+        // --- EVENT-LEVEL (cols 1-8) ---
+        tree->Branch("runnum",          &runnum,          "runnum/I");
+        tree->Branch("evnum",           &evnum,           "evnum/I");
+        tree->Branch("helicity",        &helicity,        "helicity/I");
+        tree->Branch("Q2",              &Q2,              "Q2/D");
+        tree->Branch("W",               &W,               "W/D");
+        tree->Branch("x",               &x,               "x/D");
+        tree->Branch("y",               &y,               "y/D");
+        tree->Branch("nu",              &nu,              "nu/D");
+        // --- PER-TRACK KINEMATICS (cols 9-15) ---
+        tree->Branch("pid",             &pid_h,           "pid/I");
+        tree->Branch("p",               &p_h,             "p/D");
+        tree->Branch("theta",           &theta_h,         "theta/D");
+        tree->Branch("phi",             &phi_h,           "phi/D");
+        tree->Branch("vz",              &vz_h,            "vz/D");
+        tree->Branch("sector",          &sector_h,        "sector/I");
+        tree->Branch("status",          &status_h,        "status/I");
+        // --- ML FEATURES: beta, chi2pid (cols 16-17) ---
+        tree->Branch("beta",            &beta_h,          "beta/D");
+        tree->Branch("chi2pid",         &chi2pid_h,       "chi2pid/D");
+        // --- FTOF LAYER 1A/1B (cols 18-23) ---
+        tree->Branch("ftof_energy_1A",  &ftof_energy_1A,  "ftof_energy_1A/D");
+        tree->Branch("ftof_energy_1B",  &ftof_energy_1B,  "ftof_energy_1B/D");
+        tree->Branch("ftof_time_1A",    &ftof_time_1A,    "ftof_time_1A/D");
+        tree->Branch("ftof_time_1B",    &ftof_time_1B,    "ftof_time_1B/D");
+        tree->Branch("ftof_path_1A",    &ftof_path_1A,    "ftof_path_1A/D");
+        tree->Branch("ftof_path_1B",    &ftof_path_1B,    "ftof_path_1B/D");
+        // --- ECAL ECin/ECout (cols 24-29) ---
+        tree->Branch("ecin_energy",     &ecin_energy,     "ecin_energy/D");
+        tree->Branch("ecout_energy",    &ecout_energy,    "ecout_energy/D");
+        tree->Branch("ecin_time",       &ecin_time,       "ecin_time/D");
+        tree->Branch("ecout_time",      &ecout_time,      "ecout_time/D");
+        tree->Branch("ecin_path",       &ecin_path,       "ecin_path/D");
+        tree->Branch("ecout_path",      &ecout_path,      "ecout_path/D");
+        // --- HTCC (col 30) ---
+        tree->Branch("nphe_htcc",       &nphe_htcc,       "nphe_htcc/D");
+        // --- PCAL (cols 31-33) ---
+        tree->Branch("pcal_energy",     &pcal_energy,     "pcal_energy/D");
+        tree->Branch("pcal_time",       &pcal_time,       "pcal_time/D");
+        tree->Branch("pcal_path",       &pcal_path,       "pcal_path/D");
+        // --- FTOF LAYER 2 (cols 34-36) ---
+        tree->Branch("ftof_energy_2",   &ftof_energy_2,   "ftof_energy_2/D");
+        tree->Branch("ftof_time_2",     &ftof_time_2,     "ftof_time_2/D");
+        tree->Branch("ftof_path_2",     &ftof_path_2,     "ftof_path_2/D");
+        // --- RICH (cols 37-50) — all /D (groovy stores via double[] with -9999.0 sentinel) ---
+        tree->Branch("rich_emilay",     &rich_emilay,     "rich_emilay/D");
+        tree->Branch("rich_emico",      &rich_emico,      "rich_emico/D");
+        tree->Branch("rich_emqua",      &rich_emqua,      "rich_emqua/D");
+        tree->Branch("rich_best_PID",   &rich_best_PID,   "rich_best_PID/D");
+        tree->Branch("rich_RQ",         &rich_RQ,         "rich_RQ/D");
+        tree->Branch("rich_ReQ",        &rich_ReQ,        "rich_ReQ/D");
+        tree->Branch("rich_el_logl",    &rich_el_logl,    "rich_el_logl/D");
+        tree->Branch("rich_pi_logl",    &rich_pi_logl,    "rich_pi_logl/D");
+        tree->Branch("rich_k_logl",     &rich_k_logl,     "rich_k_logl/D");
+        tree->Branch("rich_pr_logl",    &rich_pr_logl,    "rich_pr_logl/D");
+        tree->Branch("rich_best_ch",    &rich_best_ch,    "rich_best_ch/D");
+        tree->Branch("rich_best_c2",    &rich_best_c2,    "rich_best_c2/D");
+        tree->Branch("rich_best_RL",    &rich_best_RL,    "rich_best_RL/D");
+        tree->Branch("rich_best_ntot",  &rich_best_ntot,  "rich_best_ntot/D");
+        // --- MC TRUTH (cols 51-53) ---
+        tree->Branch("mc_matching_pid", &mc_matching_pid_i, "mc_matching_pid/I");
+        tree->Branch("mc_parent_pid",   &mc_parent_pid_i,   "mc_parent_pid/I");
+        tree->Branch("mc_match_quality",&mc_match_quality,  "mc_match_quality/D");
+    }
+
     // Find the root directory of the repository
     std::string package_location = findPackageRoot();
     // Define the CSV path relative to the package root
@@ -1552,6 +1658,49 @@ int main(int argc, char *argv[]) {
                 traj_x_12 >> traj_y_12 >> traj_z_12 >> traj_edge_12 >> ft_energy >> ft_x >> 
                 ft_y >> ft_z >> ft_radius) {
             tree->Fill(); // Fill the tree with the read data
+        }
+    }
+
+    // ── ML PID training script (script_index == 7) — 53 columns ─────────────
+    // Column order matches the StringBuilder append block in
+    // processing_mc_pid_training.groovy exactly (ground truth).
+    // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1)
+    //   + PCAL(3) + FTOF2(3) + RICH(14) + MCTRUTH(3) = 53
+    if (script_index == 7 && (is_mc == 0 || is_mc == 1)) {
+        while (
+            // EVENT-LEVEL (cols 1-8)
+            infile >> runnum >> evnum >> helicity >>
+                Q2 >> W >>
+                x >> y >> nu >>
+            // PER-TRACK KINEMATICS (cols 9-15)
+                pid_h >> p_h >> theta_h >>
+                phi_h >> vz_h >> sector_h >>
+                status_h >>
+            // ML FEATURES: beta, chi2pid (cols 16-17)
+                beta_h >> chi2pid_h >>
+            // FTOF LAYER 1A/1B: energy, time, path (cols 18-23)
+                ftof_energy_1A >> ftof_energy_1B >>
+                ftof_time_1A   >> ftof_time_1B   >>
+                ftof_path_1A   >> ftof_path_1B   >>
+            // ECAL ECin/ECout: energy, time, path (cols 24-29)
+                ecin_energy >> ecout_energy >>
+                ecin_time   >> ecout_time   >>
+                ecin_path   >> ecout_path   >>
+            // HTCC (col 30)
+                nphe_htcc >>
+            // PCAL: energy, time, path (cols 31-33)
+                pcal_energy >> pcal_time >> pcal_path >>
+            // FTOF LAYER 2: energy, time, path (cols 34-36)
+                ftof_energy_2 >> ftof_time_2 >> ftof_path_2 >>
+            // RICH (cols 37-50)
+                rich_emilay >> rich_emico >> rich_emqua >> rich_best_PID >>
+                rich_RQ >> rich_ReQ >>
+                rich_el_logl >> rich_pi_logl >> rich_k_logl >> rich_pr_logl >>
+                rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot >>
+            // MC TRUTH (cols 51-53)
+                mc_matching_pid_i >> mc_parent_pid_i >> mc_match_quality
+        ) {
+            tree->Fill();
         }
     }
 
