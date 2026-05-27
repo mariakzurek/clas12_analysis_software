@@ -1,7 +1,7 @@
 /*
  * processing_mc_pid_training.groovy
  *
- * Author:   Maria Zurek (PI) / Cooper <SULI student> — rich_studies branch
+ * Author:   Maria Zurek (PI) / Cooper Bell <SULI student>
  * Created:  2026-05
  * Purpose:  Produce a per-FD-track ntuple for ML kaon/pion PID classifier training.
  *           Designed primarily for clasdis MC HIPO files (runnum == 11) but also
