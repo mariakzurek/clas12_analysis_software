@@ -296,7 +296,11 @@ int main(int argc, char *argv[]) {
     double rich_emilay, rich_emico, rich_emqua, rich_best_PID;
     double rich_RQ, rich_ReQ, rich_el_logl, rich_pi_logl, rich_k_logl, rich_pr_logl;
     double rich_best_ch, rich_best_c2, rich_best_RL, rich_best_ntot;
-    // MC truth (cols 51-53): pid fields stored as int (groovy getInt), quality as double
+    // MC truth (cols 51-53): quality as double.
+    // mc_matching_pid and mc_parent_pid are integer-valued PIDs, but groovy's double[]
+    // writes them with a ".0" suffix (e.g. "211.0").  Read into double first to survive
+    // the ".0", then cast to int for the /I branch before Fill().
+    double mc_matching_pid_d, mc_parent_pid_d;
     int    mc_matching_pid_i, mc_parent_pid_i;
     double mc_match_quality;
 
@@ -1168,7 +1172,8 @@ int main(int argc, char *argv[]) {
     // Branch names match the groovy's column-map println exactly.
     // RICH fields stored as /D because extractRICH() returns double[] and the
     // groovy writes them via StringBuilder with a -9999.0 sentinel.
-    // mc_matching_pid and mc_parent_pid stored as /I (groovy getInt; written as integer tokens).
+    // mc_matching_pid and mc_parent_pid stored as /I; read via double temporaries to tolerate
+    // the ".0" suffix groovy's double[] emits, then cast to int before Fill().
     if (script_index == 7 && (is_mc == 0 || is_mc == 1)) {
         // --- EVENT-LEVEL (cols 1-8) ---
         tree->Branch("runnum",          &runnum,          "runnum/I");
@@ -1698,8 +1703,11 @@ int main(int argc, char *argv[]) {
                 rich_el_logl >> rich_pi_logl >> rich_k_logl >> rich_pr_logl >>
                 rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot >>
             // MC TRUTH (cols 51-53)
-                mc_matching_pid_i >> mc_parent_pid_i >> mc_match_quality
+            // Read PIDs as double to tolerate groovy's ".0" suffix, cast to int for /I branch.
+                mc_matching_pid_d >> mc_parent_pid_d >> mc_match_quality
         ) {
+            mc_matching_pid_i = (int)mc_matching_pid_d;
+            mc_parent_pid_i   = (int)mc_parent_pid_d;
             tree->Fill();
         }
     }
