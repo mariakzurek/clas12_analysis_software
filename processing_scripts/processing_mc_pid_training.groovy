@@ -560,7 +560,10 @@ public class PIDTrainingScript {
                     // RICH (14 vars)
                     rich.each { row_sb.append(it).append(' ') }
                     // MC truth
-                    row_sb.append(mc[0]).append(' ').append(mc[1]).append(' ').append(mc[2])
+                    // mc[0] and mc[1] are MC PIDs (integer-valued in the source); cast to int
+                    // to ensure the C++ converter (which reads these as /I) parses them.
+                    // mc[2] is mc_match_quality, a true double — leave as-is.
+                    row_sb.append((int)mc[0]).append(' ').append((int)mc[1]).append(' ').append(mc[2])
                     row_sb.append('\n')
 
                     batchLines.append(row_sb)
