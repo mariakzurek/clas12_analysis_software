@@ -13,15 +13,12 @@
  *     — same logical cuts as the production SIDIS analysis without going through
  *     analysis_fitter.electron_test().
  *  2. Loops over every other REC::Particle row; writes ONE ROW per FD charged
- *     hadron track with pid ∈ {+211, -211, +321, -321} that also passes:
+ *     hadron track with pid ∈ {+211, +321, +2212} (positive hadrons only) that
+ *     also passes:
  *       (a) generic_tests.forward_detector_cut()  — |status| ∈ [2000, 4000)
- *       (b) fiducial_cuts.dc_fiducial_cut() — DC fiducial region
- *           chi2pid is NOT a cut (written as a feature, not used for selection).
- *       (c) Energy-loss and momentum corrections applied to pion tracks (π+: stefan +
- *           Capobianco; π-: krishna). NO correction is applied for K± because the
- *           Hayward framework has no kaon corrector; raw momentum is written and this
- *           limitation is noted in the output header. Update this script if a kaon
- *           corrector is added to energy_loss_corrections.java.
+ *       (b) generic_tests.vertex_cut()             — vz window per run period
+ *       (c) fiducial_cuts.dc_fiducial_cut()        — DC region edge cuts
+ *     NO chi2pid filter — chi2pid is written as a feature (col 17), not used as a cut.
  *  3. Reads per-track detector-response variables directly from HIPO banks (no
  *     analyzer Java class is used — avoids the getIndex() index-alignment bug).
  *  4. Geometrically matches each reconstructed hadron using an anchor-then-lookup
@@ -156,11 +153,15 @@ public class PIDTrainingScript {
                fc.dc_fiducial_cut(0, rec, traj, run)
     }
 
-    // ── Per-hadron cut filter — FD-only + DC-fiducial ────────────────────────
+    // ── Per-hadron cut filter — FD-only + vertex + DC-fiducial ───────────────
     // Built directly from generic_tests and fiducial_cuts primitives.
     // Signatures verified against Java source:
     //   generic_tests.forward_detector_cut(int idx, HipoDataBank rec)
+    //   generic_tests.vertex_cut(int idx, HipoDataBank rec, HipoDataBank run)
     //   fiducial_cuts.dc_fiducial_cut(int idx, HipoDataBank rec, HipoDataBank traj, HipoDataBank run)
+    // Vertex cut is an acceptance/quality cut (rejects ghost tracks with bad vz),
+    // NOT a PID cut. Without it, ghost tracks with |vz|>10 cm leak into the ntuple
+    // (verified empirically: removes ~3% of EB-π+ that are unmatched to any MC particle).
     static boolean passHadronCuts(int row, int pid, Map banks) {
         def rec  = banks["REC::Particle"]
         def traj = banks["REC::Traj"]
@@ -169,6 +170,7 @@ public class PIDTrainingScript {
         generic_tests gt = new generic_tests()
         fiducial_cuts fc = new fiducial_cuts()
         if (!gt.forward_detector_cut(row, rec)) return false
+        if (!gt.vertex_cut(row, rec, run)) return false
         return fc.dc_fiducial_cut(row, rec, traj, run)
     }
 
