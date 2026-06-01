@@ -8,14 +8,15 @@
  *           usable on real RGA pass-2 data (QA database applied automatically).
  *
  * ─── What this script does ────────────────────────────────────────────────────
- *  1. Requires a trigger electron at REC::Particle row 0 that passes
- *     analysis_fitter.electron_test() — same cuts as the production SIDIS analysis.
+ *  1. Requires a trigger electron at REC::Particle row 0 that passes a set of
+ *     primitive cuts built directly from generic_tests, pid_cuts, and fiducial_cuts
+ *     — same logical cuts as the production SIDIS analysis without going through
+ *     analysis_fitter.electron_test().
  *  2. Loops over every other REC::Particle row; writes ONE ROW per FD charged
  *     hadron track with pid ∈ {+211, -211, +321, -321} that also passes:
  *       (a) generic_tests.forward_detector_cut()  — |status| ∈ [2000, 4000)
- *       (b) analysis_fitter.pion_test()  (for |pid| == 211)
- *           analysis_fitter.kaon_test()  (for |pid| == 321)
- *           Both enforce vertex + DC-fiducial; chi2pid is NOT a cut.
+ *       (b) fiducial_cuts.dc_fiducial_cut() — DC fiducial region
+ *           chi2pid is NOT a cut (written as a feature, not used for selection).
  *       (c) Energy-loss and momentum corrections applied to pion tracks (π+: stefan +
  *           Capobianco; π-: krishna). NO correction is applied for K± because the
  *           Hayward framework has no kaon corrector; raw momentum is written and this
@@ -23,8 +24,11 @@
  *           corrector is added to energy_loss_corrections.java.
  *  3. Reads per-track detector-response variables directly from HIPO banks (no
  *     analyzer Java class is used — avoids the getIndex() index-alignment bug).
- *  4. Geometrically matches each reconstructed hadron to MC::Lund truth particles
- *     using |Δφ| < 9° AND |Δθ| < 3° (same geometric window as processing_mc_three_particles.groovy).
+ *  4. Geometrically matches each reconstructed hadron using an anchor-then-lookup
+ *     algorithm (anchor on MC::Particle, then look up parent in MC::Lund):
+ *       Step A (MC::Particle) → geometric match → mc_matching_pid + mc_match_quality
+ *       Step B (MC::Lund)     → PID+momentum lookup → mc_parent_pid
+ *     Window: |Δφ| < 9° AND |Δθ| < 3° (MC_SCALE=3.0, scale*3° and scale*1°).
  *
  * ─── Missing-value convention ─────────────────────────────────────────────────
  *  Any -9999 in the output means the variable is missing or invalid for this track.
@@ -85,8 +89,8 @@ import clasqa.QADB
 
 import extended_kinematic_fitters.analysis_fitter
 import extended_kinematic_fitters.generic_tests
-import extended_kinematic_fitters.energy_loss_corrections
-import extended_kinematic_fitters.momentum_corrections
+import extended_kinematic_fitters.fiducial_cuts
+import extended_kinematic_fitters.pid_cuts
 import analyzers.BeamEnergy
 import analyzers.Inclusive
 
@@ -98,54 +102,74 @@ public class PIDTrainingScript {
     // MC truth matching scale factor — matches processing_mc_three_particles.groovy convention
     static final double MC_SCALE = 3.0      // phi window = scale*3°, theta window = scale*1°
     // Allowed hadron PIDs
-    static final Set<Integer> HADRON_PIDS = [211, -211, 321, -321] as Set
+    // Positive hadrons relevant for K+ analysis: π+ (signal contamination),
+    // K+ (target species), p (high-momentum K+ contamination via TOF).
+    // Negatives (π-, K-, p̄) intentionally dropped — Cooper's K+ analysis
+    // uses positive hadrons only. Negative-charge training is future work.
+    static final Set<Integer> HADRON_PIDS = [211, 321, 2212] as Set
 
     // ── Bank loading — returns map of name→bank; null if bank absent ──────────
     static Map<String, HipoDataBank> loadBanks(HipoDataEvent event) {
         def banks = [:]
         ["REC::Particle", "REC::Calorimeter", "REC::Scintillator",
          "REC::Cherenkov", "REC::Track", "REC::Traj",
-         "REC::Event", "RUN::config", "MC::Lund", "RICH::Particle"].each { name ->
+         "REC::Event", "RUN::config", "MC::Lund", "MC::Particle", "RICH::Particle"].each { name ->
             banks[name] = event.hasBank(name) ? (HipoDataBank) event.getBank(name) : null
         }
         return banks
     }
 
-    // ── Electron filter — requires pid==11 at row 0 + full electron_test() ────
-    // electron_test(int idx, double p, rec, cal, traj, run, cc)  [af.java:24-41]
-    static boolean passElectronCuts(Map banks, analysis_fitter af) {
-        def rec  = banks["REC::Particle"]
-        def cal  = banks["REC::Calorimeter"]
-        def traj = banks["REC::Traj"]
-        def run  = banks["RUN::config"]
-        def cc   = banks["REC::Cherenkov"]
-        if (!rec || !cal || !traj || !run || !cc) return false
-        if (rec.rows() == 0 || rec.getInt("pid", 0) != 11) return false
-        float px = rec.getFloat("px", 0)
-        float py = rec.getFloat("py", 0)
-        float pz = rec.getFloat("pz", 0)
-        double p_e = Math.sqrt(px*px + py*py + pz*pz)
-        return af.electron_test(0, p_e, rec, cal, traj, run, cc)
-    }
-
-    // ── Per-hadron cut filter — FD-only + vertex + DC-fiducial ───────────────
-    // pion_test / kaon_test(int idx, int pid, float vz, double vz_e, rec, cal, traj, run)
-    // NOTE: trigger_electron_vz is accepted by the signature but unused in current impl.
-    static boolean passHadronCuts(int row, int pid, double vz_e, Map banks, analysis_fitter af) {
+    // ── Electron filter — requires pid==11 at row 0 + primitive cut composition ─
+    // Cuts mirror analysis_fitter.electron_test() but are built directly from
+    // generic_tests, pid_cuts, and fiducial_cuts primitives (no analysis_fitter).
+    // Signatures verified against Java source:
+    //   generic_tests.forward_detector_cut(int idx, HipoDataBank rec)
+    //   generic_tests.vertex_cut(int idx, HipoDataBank rec, HipoDataBank run)
+    //   pid_cuts.calorimeter_energy_cut(int idx, HipoDataBank cal, HipoDataBank run)
+    //   pid_cuts.calorimeter_sampling_fraction_cut(int idx, double p, HipoDataBank run, HipoDataBank cal)
+    //   pid_cuts.calorimeter_diagonal_cut(int idx, double p, HipoDataBank cal, HipoDataBank run)
+    //   fiducial_cuts.pcal_fiducial_cut(int idx, int strictness, HipoDataBank run, HipoDataBank rec, HipoDataBank cal)
+    //   fiducial_cuts.dc_fiducial_cut(int idx, HipoDataBank rec, HipoDataBank traj, HipoDataBank run)
+    static boolean passElectronCuts(Map banks) {
         def rec  = banks["REC::Particle"]
         def cal  = banks["REC::Calorimeter"]
         def traj = banks["REC::Traj"]
         def run  = banks["RUN::config"]
         if (!rec || !cal || !traj || !run) return false
-        // Step 1: FD-only (|status| ∈ [2000, 4000))
+        if (rec.rows() == 0 || rec.getInt("pid", 0) != 11) return false
+        float px = rec.getFloat("px", 0)
+        float py = rec.getFloat("py", 0)
+        float pz = rec.getFloat("pz", 0)
+        double p_e = Math.sqrt(px*px + py*py + pz*pz)
+
         generic_tests gt = new generic_tests()
+        pid_cuts pc = new pid_cuts()
+        fiducial_cuts fc = new fiducial_cuts()
+
+        return p_e > 2.0 &&
+               gt.forward_detector_cut(0, rec) &&
+               gt.vertex_cut(0, rec, run) &&
+               pc.calorimeter_energy_cut(0, cal, run) &&
+               pc.calorimeter_sampling_fraction_cut(0, p_e, run, cal) &&
+               pc.calorimeter_diagonal_cut(0, p_e, cal, run) &&
+               fc.pcal_fiducial_cut(0, 1, run, rec, cal) &&
+               fc.dc_fiducial_cut(0, rec, traj, run)
+    }
+
+    // ── Per-hadron cut filter — FD-only + DC-fiducial ────────────────────────
+    // Built directly from generic_tests and fiducial_cuts primitives.
+    // Signatures verified against Java source:
+    //   generic_tests.forward_detector_cut(int idx, HipoDataBank rec)
+    //   fiducial_cuts.dc_fiducial_cut(int idx, HipoDataBank rec, HipoDataBank traj, HipoDataBank run)
+    static boolean passHadronCuts(int row, int pid, Map banks) {
+        def rec  = banks["REC::Particle"]
+        def traj = banks["REC::Traj"]
+        def run  = banks["RUN::config"]
+        if (!rec || !traj || !run) return false
+        generic_tests gt = new generic_tests()
+        fiducial_cuts fc = new fiducial_cuts()
         if (!gt.forward_detector_cut(row, rec)) return false
-        // Step 2: vertex + DC fiducial via the appropriate test
-        float vz_h = rec.getFloat("vz", row)
-        int absPid = Math.abs(pid)
-        if (absPid == 211) return af.pion_test(row, pid, vz_h, vz_e, rec, cal, traj, run)
-        if (absPid == 321) return af.kaon_test(row, pid, vz_h, vz_e, rec, cal, traj, run)
-        return false
+        return fc.dc_fiducial_cut(row, rec, traj, run)
     }
 
     // ── FTOF extraction — REC::Scintillator, detector=12, layers 1/2/3 ───────
@@ -245,50 +269,112 @@ public class PIDTrainingScript {
         return (double) (180/Math.PI)*Math.acos(z/r)
     }
 
-    // ── MC truth matching — pattern from processing_mc_three_particles.groovy ─
+    // ── MC truth matching — anchor-then-lookup algorithm ─────────────────────
+    //
+    // Anchors on MC::Particle (final-state only by construction). Then looks up
+    // the Lund row by PID+momentum equality (MC::Particle is a subset of Lund
+    // type==1).
+    //
+    // Step A — anchor on MC::Particle: geometric match REC track to MC::Particle
+    //   (single pass). Window: |Δφ| < MC_SCALE*3° AND |Δθ| < MC_SCALE*1°.
+    //   First match wins. Records matching_pid, matched_px/py/pz, and
+    //   mc_match_quality = sqrt(Δφ² + Δθ²) in degrees.
+    //
+    // Step B — lookup parent in MC::Lund by PID + momentum: IF Step A matched,
+    //   loops over MC::Lund rows. For each row: reads type as
+    //   (lundBank.getByte("type", i) & 0xFF); skips if != 1. Skips if pid
+    //   doesn't match matching_pid. Skips unless each momentum component matches
+    //   matched_px/py/pz within 1e-4 GeV. First qualifying row is THE Lund row
+    //   for this track. Reads parent_idx = (getByte("parent", i) & 0xFF) - 1.
+    //   If parent_idx in [0, rows()): mc_parent_pid = Lund pid at parent_idx.
+    //   Else: mc_parent_pid = -9999.
+    //
+    // Step C — return values:
+    //   No Step A match  → [-9999, -9999, -9999].
+    //   Step A matched, Step B found no Lund row → [matching_pid, -9999, mc_match_quality].
+    //   Both steps matched → [matching_pid, mc_parent_pid, mc_match_quality].
+    //
     // Returns [mc_matching_pid, mc_parent_pid, mc_match_quality(deg)].
-    // mc_parent_pid: PDG of parent (MC::Lund "parent" = 1-based index, 0=primary → -9999).
-    static double[] extractMCTruth(double h_px, double h_py, double h_pz, HipoDataBank lundBank) {
+    // Matching window: |Δφ| < MC_SCALE*3° AND |Δθ| < MC_SCALE*1°  (9° and 3°).
+    static double[] extractMCTruth(double h_px, double h_py, double h_pz,
+                                   HipoDataBank lundBank, HipoDataBank mcBank) {
         double[] result = [MISSING, MISSING, MISSING]
-        if (!lundBank) return result
 
-        boolean matching_h = false
-        int matching_h_pid = 0
-        int mc_h_parent_index = 0
-        double match_dphi = MISSING
-        double match_dtheta = MISSING
+        double exp_phi   = phi_calculation(h_px, h_py)
+        double exp_theta = theta_calculation(h_px, h_py, h_pz)
 
-        for (int current_part = 0; current_part < lundBank.rows(); current_part++) {
-            int pid = lundBank.getInt("pid", current_part)
-            if (matching_h) { continue }
-            double mc_px = lundBank.getFloat("px", current_part)
-            double mc_py = lundBank.getFloat("py", current_part)
-            double mc_pz = lundBank.getFloat("pz", current_part)
+        // ── Step A: anchor on MC::Particle — geometric match for truth PID ────
+        // MC::Particle contains only final-state particles (no quarks/diquarks/
+        // strings), so this gives the correct truth PID for the ML label.
+        boolean matched = false
+        int matching_pid = 0
+        double matched_px = 0.0, matched_py = 0.0, matched_pz = 0.0
+        double match_dphi = 0.0, match_dtheta = 0.0
 
-            double mc_phi       = phi_calculation(mc_px, mc_py)
-            double mc_theta_lab = theta_calculation(mc_px, mc_py, mc_pz)
+        if (mcBank) {
+            for (int i = 0; i < mcBank.rows(); i++) {
+                if (matched) { continue }
+                double mc_px = mcBank.getFloat("px", i)
+                double mc_py = mcBank.getFloat("py", i)
+                double mc_pz = mcBank.getFloat("pz", i)
 
-            double exp_phi   = phi_calculation(h_px, h_py)
-            double exp_theta = theta_calculation(h_px, h_py, h_pz)
+                double mc_phi   = phi_calculation(mc_px, mc_py)
+                double mc_theta = theta_calculation(mc_px, mc_py, mc_pz)
 
-            matching_h = Math.abs(exp_phi - mc_phi) < MC_SCALE*3.0 &&
-                         Math.abs(exp_theta - mc_theta_lab) < MC_SCALE*1.0
-            if (matching_h) {
-                matching_h_pid     = pid
-                mc_h_parent_index  = lundBank.getInt("parent", current_part) - 1
-                match_dphi         = Math.abs(exp_phi - mc_phi)
-                match_dtheta       = Math.abs(exp_theta - mc_theta_lab)
+                double dphi   = Math.abs(exp_phi   - mc_phi)
+                double dtheta = Math.abs(exp_theta - mc_theta)
+
+                if (dphi < MC_SCALE*3.0 && dtheta < MC_SCALE*1.0) {
+                    matched     = true
+                    matching_pid = mcBank.getInt("pid", i)
+                    matched_px  = mc_px
+                    matched_py  = mc_py
+                    matched_pz  = mc_pz
+                    match_dphi   = dphi
+                    match_dtheta = dtheta
+                }
             }
         }
 
-        if (!matching_h) return result
-        result[0] = matching_h_pid
-        // parent field in MC::Lund is a 1-based index; 0 means primary (no parent)
-        if (mc_h_parent_index >= 0 && mc_h_parent_index < lundBank.rows()) {
-            result[1] = lundBank.getInt("pid", mc_h_parent_index)
+        // Step C (no Step A match): all three stay -9999
+        if (!matched) return result
+
+        double mc_match_quality = Math.sqrt(match_dphi*match_dphi + match_dtheta*match_dtheta)
+        result[0] = matching_pid
+        result[2] = mc_match_quality
+        // result[1] (mc_parent_pid) stays -9999 unless Step B succeeds below
+
+        // ── Step B: lookup parent in MC::Lund by PID + momentum ──────────────
+        // MC::Particle is a subset of MC::Lund type==1 rows. Find the unique Lund
+        // row that matches by PID and momentum (within 1e-4 GeV per component),
+        // then read its parent index to obtain mc_parent_pid.
+        if (lundBank) {
+            for (int i = 0; i < lundBank.rows(); i++) {
+                // Only consider final-state (type==1) Lund particles
+                int lund_type = (int)(lundBank.getByte("type", i) & 0xFF)
+                if (lund_type != 1) continue
+
+                // PID must match the MC::Particle anchor
+                if (lundBank.getInt("pid", i) != matching_pid) continue
+
+                // Momentum components must match within tolerance
+                double lund_px = lundBank.getFloat("px", i)
+                double lund_py = lundBank.getFloat("py", i)
+                double lund_pz = lundBank.getFloat("pz", i)
+                if (Math.abs(lund_px - matched_px) > 1e-4) continue
+                if (Math.abs(lund_py - matched_py) > 1e-4) continue
+                if (Math.abs(lund_pz - matched_pz) > 1e-4) continue
+
+                // This is the Lund row for our track — read its parent
+                int parent_idx = (int)(lundBank.getByte("parent", i) & 0xFF) - 1
+                if (parent_idx >= 0 && parent_idx < lundBank.rows()) {
+                    result[1] = lundBank.getInt("pid", parent_idx)
+                }
+                // else: primary particle (no parent) → mc_parent_pid stays -9999
+                break
+            }
         }
-        // else: primary particle → mc_parent_pid stays -9999
-        result[2] = Math.sqrt(match_dphi*match_dphi + match_dtheta*match_dtheta)
+
         return result
     }
 
@@ -368,9 +454,6 @@ public class PIDTrainingScript {
         if (userProvidedRun == 11) println("MC mode (runnum forced to 11): QA always passes.")
 
         // ── Physics setup ─────────────────────────────────────────────────────
-        analysis_fitter af = new analysis_fitter(beam_energy)
-        energy_loss_corrections elc = new energy_loss_corrections()
-        momentum_corrections mc_corr = new momentum_corrections()
         // research_fitter used to obtain PhysicsEvent for the Inclusive analyzer
         analysis_fitter research_fitter = new analysis_fitter(10.6041)
 
@@ -440,8 +523,8 @@ public class PIDTrainingScript {
                 if (!rec_bank || !run_bank) continue
 
                 // ── Event-level electron filter ────────────────────────────────
-                // Require pid==11 at row 0 and full electron_test (FD + SF + fiducial)
-                if (!passElectronCuts(banks, af)) continue
+                // Require pid==11 at row 0 and full electron cuts (FD + SF + fiducial)
+                if (!passElectronCuts(banks)) continue
 
                 // ── Electron vz (row 0) — needed for passHadronCuts vertex cut ──
                 double vz_e = rec_bank.getFloat("vz", 0)
@@ -467,8 +550,8 @@ public class PIDTrainingScript {
                     int pid = rec_bank.getInt("pid", row)
                     if (!HADRON_PIDS.contains(pid)) continue
 
-                    // ── Cut 1: FD-only + vertex + DC-fiducial ─────────────────
-                    if (!passHadronCuts(row, pid, vz_e, banks, af)) continue
+                    // ── Cut 1: FD-only + DC-fiducial ──────────────────────────
+                    if (!passHadronCuts(row, pid, banks)) continue
 
                     // ── Per-track kinematics ───────────────────────────────────
                     float h_px = rec_bank.getFloat("px", row)
@@ -477,35 +560,11 @@ public class PIDTrainingScript {
                     float h_vz = rec_bank.getFloat("vz", row)
                     int h_status = rec_bank.getInt("status", row)
 
-                    // ── Energy-loss + momentum corrections for pions ───────────
-                    // LIMITATION: No kaon corrector exists in energy_loss_corrections.java
-                    // or momentum_corrections.java. K± are written with raw momentum.
-                    // Update here if a kaon corrector is added to the framework.
-                    float[] momentum = [h_px, h_py, h_pz] as float[]
-                    int runnum_for_corr = runnum
-                    int runPeriod = -1
-                    if (runnum_for_corr >= 4763 && runnum_for_corr <= 5666) runPeriod = 3  // RGA Fa18
-                    else if (runnum_for_corr >= 6616 && runnum_for_corr <= 6783) runPeriod = 2  // RGA Sp19
+                    // NOTE: No momentum or energy-loss corrections applied to MC.
+                    // Corrections are derived for data and would over-correct MC. A separate
+                    // processing_data_pid_training.groovy will apply them when run on data.
 
                     int h_sector = extractSector(row, banks["REC::Track"])
-                    boolean inbending  = (run_bank.getFloat("torus", 0) <= 0)
-                    boolean outbending = !inbending
-
-                    if (pid == 211 && h_sector >= 1 && h_sector <= 6) {
-                        // π+: Stefan energy-loss correction, then Capobianco momentum correction
-                        elc.stefan_piplus_energy_loss_corrections(row, momentum, rec_bank, run_bank, banks["REC::Track"])
-                        if (inbending) {
-                            mc_corr.inbending_momentum_corrections(momentum, h_sector, 1, 0, runPeriod, 0, 0)
-                        } else if (outbending) {
-                            mc_corr.outbending_momentum_corrections(momentum, h_sector, 1, 0, runPeriod, 0, 0)
-                        }
-                    } else if (pid == -211) {
-                        // π-: Krishna energy-loss correction (no Capobianco π- momentum correction exists)
-                        elc.krishna_energy_loss_corrections(row, momentum, rec_bank, run_bank)
-                    }
-                    // K+, K-: no corrections — raw momentum written (see LIMITATION above)
-
-                    h_px = momentum[0]; h_py = momentum[1]; h_pz = momentum[2]
                     double h_p     = Math.sqrt(h_px*h_px + h_py*h_py + h_pz*h_pz)
                     double h_theta = thetaDeg(h_px, h_py, h_pz)
                     double h_phi   = phiDeg(h_px, h_py)
@@ -530,7 +589,7 @@ public class PIDTrainingScript {
                     double[] rich = extractRICH(row, banks["RICH::Particle"])
 
                     // ── MC truth matching ──────────────────────────────────────
-                    double[] mc = extractMCTruth(h_px, h_py, h_pz, banks["MC::Lund"])
+                    double[] mc = extractMCTruth(h_px, h_py, h_pz, banks["MC::Lund"], banks["MC::Particle"])
 
                     // ── Assemble output row (53 columns; see header + final println) ──
                     int helicity = event.hasBank("REC::Event") ?
