@@ -283,8 +283,12 @@ public class PIDTrainingScript {
     //   loops over MC::Lund rows. For each row: reads type as
     //   (lundBank.getByte("type", i) & 0xFF); skips if != 1. Skips if pid
     //   doesn't match matching_pid. Skips unless each momentum component matches
-    //   matched_px/py/pz within 1e-4 GeV. First qualifying row is THE Lund row
-    //   for this track. Reads parent_idx = (getByte("parent", i) & 0xFF) - 1.
+    //   matched_px/py/pz within 1e-4 GeV. Takes the FIRST Lund row that matches
+    //   the anchor particle's PID and momentum to within 1e-4 GeV. In practice
+    //   this is unique (MC::Particle is a subset of Lund type==1 rows with the
+    //   same four-vectors), but if duplicate four-vectors were to exist among
+    //   same-PID final-state particles, parent assignment would depend on bank
+    //   order. Reads parent_idx = (getByte("parent", i) & 0xFF) - 1.
     //   If parent_idx in [0, rows()): mc_parent_pid = Lund pid at parent_idx.
     //   Else: mc_parent_pid = -9999.
     //
@@ -357,9 +361,11 @@ public class PIDTrainingScript {
         // result[1] (mc_parent_pid) stays -9999 unless Step B succeeds below
 
         // ── Step B: lookup parent in MC::Lund by PID + momentum ──────────────
-        // MC::Particle is a subset of MC::Lund type==1 rows. Find the unique Lund
+        // MC::Particle is a subset of MC::Lund type==1 rows. Find the first Lund
         // row that matches by PID and momentum (within 1e-4 GeV per component),
-        // then read its parent index to obtain mc_parent_pid.
+        // then read its parent index to obtain mc_parent_pid. In practice the
+        // match is unique, but bank order determines the result if two same-PID
+        // particles share identical four-vectors.
         if (lundBank) {
             for (int i = 0; i < lundBank.rows(); i++) {
                 // Only consider final-state (type==1) Lund particles
@@ -377,7 +383,7 @@ public class PIDTrainingScript {
                 if (Math.abs(lund_py - matched_py) > 1e-4) continue
                 if (Math.abs(lund_pz - matched_pz) > 1e-4) continue
 
-                // This is the Lund row for our track — read its parent.
+                // First matching Lund row — read its parent.
                 // Schema (coatjava/etc/bankdefs/hipo4/mc.json) defines MC::Lund.parent
                 // as type "B" (signed Byte), so getByte is correct. The & 0xFF reinterprets
                 // as unsigned (0–255). For typical SIDIS events (<100 generator particles)
