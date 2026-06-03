@@ -4,8 +4,8 @@
  * Author:   Maria Zurek (PI) / Cooper Bell <SULI student>
  * Created:  2026-05
  * Purpose:  Produce a per-FD-track ntuple for ML kaon/pion PID classifier training.
- *           Designed primarily for clasdis MC HIPO files (runnum == 11) but also
- *           usable on real RGA pass-2 data (QA database applied automatically).
+ *           Designed for clasdis MC HIPO files (runnum == 11).
+ *           MC-only script. Does NOT apply QADB filtering. Warns if runnum != 11.
  *
  * ─── What this script does ────────────────────────────────────────────────────
  *  1. Requires a trigger electron at REC::Particle row 0 that passes a set of
@@ -84,11 +84,8 @@
 import org.jlab.io.hipo.HipoDataSource
 import org.jlab.io.hipo.HipoDataEvent
 import org.jlab.io.hipo.HipoDataBank
-import org.jlab.clas.physics.LorentzVector
 import org.jlab.clas.physics.PhysicsEvent
 import groovy.io.FileType
-import clasqa.QADB
-
 import extended_kinematic_fitters.analysis_fitter
 import extended_kinematic_fitters.generic_tests
 import extended_kinematic_fitters.fiducial_cuts
@@ -101,6 +98,12 @@ public class PIDTrainingScript {
 
     // ── Constants ──────────────────────────────────────────────────────────────
     static final double MISSING = -9999.0
+
+    // ── Stateless helper instances (hoisted to avoid per-track allocation) ─────
+    static final generic_tests GENERIC_TESTS = new generic_tests()
+    static final fiducial_cuts FIDUCIAL_CUTS = new fiducial_cuts()
+    static final pid_cuts      PID_CUTS      = new pid_cuts()
+
     // MC truth matching scale factor — matches processing_mc_three_particles.groovy convention
     static final double MC_SCALE = 3.0      // phi window = scale*3°, theta window = scale*1°
     // Allowed hadron PIDs
@@ -110,15 +113,26 @@ public class PIDTrainingScript {
     // uses positive hadrons only. Negative-charge training is future work.
     static final Set<Integer> HADRON_PIDS = [211, 321, 2212] as Set
 
-    // ── Bank loading — returns map of name→bank; null if bank absent ──────────
-    static Map<String, HipoDataBank> loadBanks(HipoDataEvent event) {
+    // ── Stage 1: banks needed for the electron filter only ────────────────────
+    // Called for every event. Cheap set — avoids loading expensive banks
+    // (MC::Lund, MC::Particle, RICH::Particle, REC::Scintillator) on events
+    // that will be rejected by the electron filter anyway.
+    static Map<String, HipoDataBank> loadBanksForElectronGate(HipoDataEvent event) {
         def banks = [:]
-        ["REC::Particle", "REC::Calorimeter", "REC::Scintillator",
-         "REC::Cherenkov", "REC::Track", "REC::Traj",
-         "REC::Event", "RUN::config", "MC::Lund", "MC::Particle", "RICH::Particle"].each { name ->
+        ["REC::Particle", "REC::Calorimeter", "REC::Traj",
+         "REC::Cherenkov", "RUN::config"].each { name ->
             banks[name] = event.hasBank(name) ? (HipoDataBank) event.getBank(name) : null
         }
         return banks
+    }
+
+    // ── Stage 2: per-track banks; called only AFTER electron passes ───────────
+    // Loads the remaining expensive banks into the existing map in-place.
+    static void loadRemainingBanks(HipoDataEvent event, Map banks) {
+        ["REC::Scintillator", "REC::Track", "REC::Event",
+         "MC::Lund", "MC::Particle", "RICH::Particle"].each { name ->
+            banks[name] = event.hasBank(name) ? (HipoDataBank) event.getBank(name) : null
+        }
     }
 
     // ── Electron filter — requires pid==11 at row 0 + primitive cut composition ─
@@ -144,18 +158,14 @@ public class PIDTrainingScript {
         float pz = rec.getFloat("pz", 0)
         double p_e = Math.sqrt(px*px + py*py + pz*pz)
 
-        generic_tests gt = new generic_tests()
-        pid_cuts pc = new pid_cuts()
-        fiducial_cuts fc = new fiducial_cuts()
-
         return p_e > 2.0 &&
-               gt.forward_detector_cut(0, rec) &&
-               gt.vertex_cut(0, rec, run) &&
-               pc.calorimeter_energy_cut(0, cal, run) &&
-               pc.calorimeter_sampling_fraction_cut(0, p_e, run, cal) &&
-               pc.calorimeter_diagonal_cut(0, p_e, cal, run) &&
-               fc.pcal_fiducial_cut(0, 1, run, rec, cal) &&
-               fc.dc_fiducial_cut(0, rec, traj, run)
+               GENERIC_TESTS.forward_detector_cut(0, rec) &&
+               GENERIC_TESTS.vertex_cut(0, rec, run) &&
+               PID_CUTS.calorimeter_energy_cut(0, cal, run) &&
+               PID_CUTS.calorimeter_sampling_fraction_cut(0, p_e, run, cal) &&
+               PID_CUTS.calorimeter_diagonal_cut(0, p_e, cal, run) &&
+               FIDUCIAL_CUTS.pcal_fiducial_cut(0, 1, run, rec, cal) &&
+               FIDUCIAL_CUTS.dc_fiducial_cut(0, rec, traj, run)
     }
 
     // ── Per-hadron cut filter — FD-only + vertex + DC-fiducial ───────────────
@@ -172,11 +182,9 @@ public class PIDTrainingScript {
         def traj = banks["REC::Traj"]
         def run  = banks["RUN::config"]
         if (!rec || !traj || !run) return false
-        generic_tests gt = new generic_tests()
-        fiducial_cuts fc = new fiducial_cuts()
-        if (!gt.forward_detector_cut(row, rec)) return false
-        if (!gt.vertex_cut(row, rec, run)) return false
-        return fc.dc_fiducial_cut(row, rec, traj, run)
+        if (!GENERIC_TESTS.forward_detector_cut(row, rec)) return false
+        if (!GENERIC_TESTS.vertex_cut(row, rec, run)) return false
+        return FIDUCIAL_CUTS.dc_fiducial_cut(row, rec, traj, run)
     }
 
     // ── FTOF extraction — REC::Scintillator, detector=12, layers 1/2/3 ───────
@@ -306,7 +314,6 @@ public class PIDTrainingScript {
         boolean matched = false
         int matching_pid = 0
         double matched_px = 0.0, matched_py = 0.0, matched_pz = 0.0
-        double match_dphi = 0.0, match_dtheta = 0.0
         double best_d_norm = Double.MAX_VALUE
 
         if (mcBank) {
@@ -334,8 +341,6 @@ public class PIDTrainingScript {
                         matched_px   = mc_px
                         matched_py   = mc_py
                         matched_pz   = mc_pz
-                        match_dphi   = dphi
-                        match_dtheta = dtheta
                     }
                 }
             }
@@ -412,17 +417,6 @@ public class PIDTrainingScript {
         return (r < 1e-12) ? 0.0 : Math.toDegrees(Math.acos(pz / r))
     }
 
-    // ── Beam energy by run — mirrors BeamEnergy.java without importing analyzers.* ──
-    // Uses the CLI-supplied fallback for runnum==11 (MC) and unknown periods.
-    static double beamEnergyForRun(int runnum, double fallback) {
-        if (runnum == 11) return fallback          // MC: always use CLI value
-        if (runnum >= 5032 && runnum <= 5666) return 10.6041   // RGA Fa18
-        if (runnum >= 6616 && runnum <= 6783) return 10.1998   // RGA Sp19
-        if (runnum >= 6120 && runnum <= 6399) return 10.5986   // RGB Sp19
-        if (runnum >= 11093 && runnum <= 11283) return 10.5473 // RGC Su22 (approx)
-        return fallback  // unknown period: use CLI default
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // ── Main entry point ───────────────────────────────────────════════════════
     // ═══════════════════════════════════════════════════════════════════════════
@@ -467,28 +461,7 @@ public class PIDTrainingScript {
 
         // ── Physics setup ─────────────────────────────────────────────────────
         // research_fitter used to obtain PhysicsEvent for the Inclusive analyzer
-        analysis_fitter research_fitter = new analysis_fitter(10.6041)
-
-        // ── QA database setup (copy pattern from processing_two_particles.groovy) ─
-        QADB qa = new QADB("latest")
-        qa.checkForDefect('TotalOutlier')
-        qa.checkForDefect('TerminalOutlier')
-        qa.checkForDefect('MarginalOutlier')
-        qa.checkForDefect('SectorLoss')
-        qa.checkForDefect('LowLiveTime')
-        qa.checkForDefect('Misc')
-        qa.checkForDefect('ChargeHigh')
-        qa.checkForDefect('ChargeNegative')
-        qa.checkForDefect('ChargeUnknown')
-        qa.checkForDefect('PossiblyNoBeam')
-        [   // runs with Misc that should be allowed (empty target, RICH-off, etc.)
-            6736, 6737, 6738, 6739, 6740, 6741, 6742, 6743, 6744, 6746, 6747,
-            6748, 6749, 6750, 6751, 6753, 6754, 6755, 6756, 6757,
-            16194, 16089, 16185, 16308, 16184, 16307, 16309,
-            16872, 16975,
-            17763, 17764, 17765, 17766, 17767, 17768,
-            17179, 17180, 17181, 17182, 17183, 17188, 17189, 17252
-        ].each { run -> qa.allowMiscBit(run) }
+        analysis_fitter research_fitter = new analysis_fitter(beam_energy)
 
         // ── I/O batching ──────────────────────────────────────────────────────
         StringBuilder batchLines = new StringBuilder()
@@ -504,6 +477,9 @@ public class PIDTrainingScript {
             HipoDataSource reader = new HipoDataSource()
             reader.open(hipo_list[current_file])
 
+            // ── Per-file runnum warning (lazy: fires on first readable event) ──
+            boolean firstEvent = true
+
             // ── Event loop ────────────────────────────────────────────────────
             while (reader.hasEvent()) {
                 ++num_events
@@ -517,17 +493,19 @@ public class PIDTrainingScript {
                 if (!config_bank_raw) continue
                 int runnum = userProvidedRun ?: config_bank_raw.getInt("run",  0)
                 int evnum  = config_bank_raw.getInt("event", 0)
-                // Skip Hall-C bleedthrough run range
-                if (runnum > 16600 && runnum < 16700) continue
-                // Hard upper bound matching processing_two_particles.groovy
-                if (runnum > 17768) continue
 
-                // ── QA: runnum==11 (MC) always passes; otherwise consult QADB ──
-                boolean passQA = (runnum == 11 || runnum < 5020 || qa.pass(runnum, evnum))
-                if (!passQA) continue
+                // ── Warn once per file if runnum is not 11 (MC convention) ─────
+                if (firstEvent) {
+                    firstEvent = false
+                    if (runnum != 11) {
+                        println("WARNING: file ${hipo_list[current_file].name} has runnum=${runnum}," +
+                                " expected 11 (MC convention). This script is MC-only;" +
+                                " data results may be invalid.")
+                    }
+                }
 
-                // ── Load all banks for this event ──────────────────────────────
-                Map banks = loadBanks(event)
+                // ── Stage 1: load only banks needed for the electron filter ────
+                Map banks = loadBanksForElectronGate(event)
                 banks["RUN::config"] = config_bank_raw  // already loaded above
 
                 def rec_bank  = banks["REC::Particle"]
@@ -537,6 +515,9 @@ public class PIDTrainingScript {
                 // ── Event-level electron filter ────────────────────────────────
                 // Require pid==11 at row 0 and full electron cuts (FD + SF + fiducial)
                 if (!passElectronCuts(banks)) continue
+
+                // ── Stage 2: load remaining banks (only for events that pass) ──
+                loadRemainingBanks(event, banks)
 
                 // ── DIS kinematics via Inclusive analyzer ─────────────────────
                 // Mirrors the convention of processing_inclusive.groovy exactly:
