@@ -55,6 +55,9 @@
  *   24 ecin_energy     25 ecout_energy    26 ecin_time       27 ecout_time
  *   28 ecin_path       29 ecout_path
  *   30 nphe_htcc
+ *   NOTE: all 5 time columns (ftof_time_1A, ftof_time_1B, ecin_time, ecout_time,
+ *   pcal_time, ftof_time_2) are time-of-flight from vertex = t_raw - REC::Event.startTime.
+ *   Typical values ~25 ns. MISSING (-9999) if REC::Event.startTime is absent or invalid.
  *  PCAL + FTOF layer 2 — included for completeness; evaluate for training (6):
  *   31 pcal_energy     32 pcal_time       33 pcal_path
  *   34 ftof_energy_2   35 ftof_time_2     36 ftof_path_2
@@ -187,9 +190,24 @@ public class PIDTrainingScript {
         return FIDUCIAL_CUTS.dc_fiducial_cut(row, rec, traj, run)
     }
 
+    // ── Read REC::Event.startTime — used to subtract from all FTOF/ECAL times ──
+    // Returns MISSING if REC::Event bank is absent, empty, or startTime is an
+    // EB sentinel value (EB writes values far outside the physical range on failure).
+    static double extractStartTime(HipoDataBank event_bank) {
+        if (!event_bank) return MISSING
+        if (event_bank.rows() == 0) return MISSING
+        double st = event_bank.getFloat("startTime", 0)
+        // EB sentinel for invalid start time is typically -1000 or similar large negative.
+        // Treat any value outside the physically reasonable window as missing.
+        if (st < -100.0 || st > 1e6) return MISSING
+        return st
+    }
+
     // ── FTOF extraction — REC::Scintillator, detector=12, layers 1/2/3 ───────
     // Returns [energy_1A, energy_1B, time_1A, time_1B, path_1A, path_1B, energy_2, time_2, path_2]
-    static double[] extractFTOF(int hadron_row, HipoDataBank scint_bank) {
+    // Times (indices 2, 3, 7) are time-of-flight from vertex: t_raw - start_time.
+    // If start_time is MISSING or the raw time itself is MISSING, the time stays MISSING.
+    static double[] extractFTOF(int hadron_row, HipoDataBank scint_bank, double start_time) {
         double[] result = [MISSING, MISSING, MISSING, MISSING, MISSING, MISSING,
                            MISSING, MISSING, MISSING]
         if (!scint_bank) return result
@@ -198,7 +216,8 @@ public class PIDTrainingScript {
             if (scint_bank.getInt("detector", i) != 12) continue   // FTOF detector id
             int layer = scint_bank.getInt("layer", i)
             double e = scint_bank.getFloat("energy", i)
-            double t = scint_bank.getFloat("time",   i)
+            double t_raw = scint_bank.getFloat("time", i)
+            double t = (t_raw != MISSING && start_time != MISSING) ? t_raw - start_time : MISSING
             double path = scint_bank.getFloat("path", i)
             if      (layer == 1) { result[0]=e; result[2]=t; result[4]=path }  // 1A
             else if (layer == 2) { result[1]=e; result[3]=t; result[5]=path }  // 1B
@@ -209,7 +228,9 @@ public class PIDTrainingScript {
 
     // ── ECAL/PCAL extraction — REC::Calorimeter, layers 1(PCAL)/4(ECin)/7(ECout)
     // Returns [pcal_e, pcal_t, pcal_path, ecin_e, ecin_t, ecin_path, ecout_e, ecout_t, ecout_path]
-    static double[] extractECAL(int hadron_row, HipoDataBank cal_bank) {
+    // Times (indices 1, 4, 7) are time-of-flight from vertex: t_raw - start_time.
+    // If start_time is MISSING or the raw time itself is MISSING, the time stays MISSING.
+    static double[] extractECAL(int hadron_row, HipoDataBank cal_bank, double start_time) {
         double[] result = [MISSING, MISSING, MISSING, MISSING, MISSING, MISSING,
                            MISSING, MISSING, MISSING]
         if (!cal_bank) return result
@@ -217,7 +238,8 @@ public class PIDTrainingScript {
             if (cal_bank.getInt("pindex", i) != hadron_row) continue
             int layer = cal_bank.getInt("layer", i)
             double e    = cal_bank.getFloat("energy", i)
-            double t    = cal_bank.getFloat("time",   i)
+            double t_raw = cal_bank.getFloat("time",  i)
+            double t = (t_raw != MISSING && start_time != MISSING) ? t_raw - start_time : MISSING
             double path = cal_bank.getFloat("path",   i)
             if      (layer == 1) { result[0]=e; result[1]=t; result[2]=path }  // PCAL
             else if (layer == 4) { result[3]=e; result[4]=t; result[5]=path }  // ECin
@@ -574,13 +596,18 @@ public class PIDTrainingScript {
                     double chi2pid  = rec_bank.getFloat("chi2pid", row)
 
                     // ── FTOF detector responses ────────────────────────────────
-                    double[] ftof = extractFTOF(row, banks["REC::Scintillator"])
+                    // start_time is read once per event and passed into both extractors
+                    // so that all 5 time columns are time-of-flight from vertex (t_raw - startTime).
+                    double start_time = extractStartTime(banks["REC::Event"])
+                    double[] ftof = extractFTOF(row, banks["REC::Scintillator"], start_time)
                     // [energy_1A, energy_1B, time_1A, time_1B, path_1A, path_1B,
                     //  energy_2,  time_2,    path_2]
+                    // times are TOF from vertex (~25 ns); MISSING if startTime absent/invalid.
 
                     // ── ECAL / PCAL calorimeter responses ──────────────────────
-                    double[] ecal = extractECAL(row, banks["REC::Calorimeter"])
+                    double[] ecal = extractECAL(row, banks["REC::Calorimeter"], start_time)
                     // [pcal_e, pcal_t, pcal_path, ecin_e, ecin_t, ecin_path, ecout_e, ecout_t, ecout_path]
+                    // times are TOF from vertex (~25 ns); MISSING if startTime absent/invalid.
 
                     // ── HTCC nphe ──────────────────────────────────────────────
                     double nphe_htcc = extractHTCC(row, banks["REC::Cherenkov"])
