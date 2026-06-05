@@ -73,7 +73,7 @@
  *  decide to impute, drop, or use missingness itself as a feature (missingness
  *  in PCAL and FTOF layer 2 is physically meaningful for PID).
  *
- * ─── Output columns (50 total) ────────────────────────────────────────────────
+ * ─── Output columns (51 total) ────────────────────────────────────────────────
  *  Event-level (8):
  *   1  runnum          2  evnum           3  helicity
  *   4  Q2              5  W
@@ -82,13 +82,14 @@
  *   9  pid             10 p               11 theta
  *   12 phi             13 vz              14 sector
  *   15 status
- *  Per-track ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc (15):
+ *  Per-track ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc + nphe_ltcc (16):
  *   16 beta            17 chi2pid
  *   18 ftof_energy_1A  19 ftof_energy_1B  20 ftof_time_1A   21 ftof_time_1B
  *   22 ftof_path_1A    23 ftof_path_1B
  *   24 ecin_energy     25 ecout_energy    26 ecin_time       27 ecout_time
  *   28 ecin_path       29 ecout_path
  *   30 nphe_htcc
+ *   31 nphe_ltcc
   *   NOTE: all 5 time columns (ftof_time_1A, ftof_time_1B, ecin_time, ecout_time,
   *   pcal_time, ftof_time_2) store TIME OF FLIGHT, not absolute paddle time.
   *   The subtraction uses REC::Particle.vt for each track, which is the per-track
@@ -96,13 +97,13 @@
   *   Typical values ~25 ns. MISSING (-9999) if REC::Particle.vt is absent or invalid
   *   (EB sentinel: vt <= 0).
  *  PCAL + FTOF layer 2 — included for completeness; evaluate for training (6):
- *   31 pcal_energy     32 pcal_time       33 pcal_path
- *   34 ftof_energy_2   35 ftof_time_2     36 ftof_path_2
+ *   32 pcal_energy     33 pcal_time       34 pcal_path
+ *   35 ftof_energy_2   36 ftof_time_2     37 ftof_path_2
  *  RICH — cross-check only, NOT training features (14):
- *   37 rich_emilay     38 rich_emico      39 rich_emqua      40 rich_best_PID
- *   41 rich_RQ         42 rich_ReQ        43 rich_el_logl    44 rich_pi_logl
- *   45 rich_k_logl     46 rich_pr_logl    47 rich_best_ch    48 rich_best_c2
- *   49 rich_best_RL    50 rich_best_ntot
+ *   38 rich_emilay     39 rich_emico      40 rich_emqua      41 rich_best_PID
+ *   42 rich_RQ         43 rich_ReQ        44 rich_el_logl    45 rich_pi_logl
+ *   46 rich_k_logl     47 rich_pr_logl    48 rich_best_ch    49 rich_best_c2
+ *   50 rich_best_RL    51 rich_best_ntot
  *
  * ─── How to run ───────────────────────────────────────────────────────────────
  *   ./processing.csh processing_scripts/processing_data_pid_training.groovy \
@@ -117,7 +118,7 @@
  *       /path/to/rga_fa18_inb/ data_pid_training 0 10.6041
  *
  * ─── Files that need updating but are NOT changed here ────────────────────────
- *  - convert_txt_to_root.cpp  : add a new case (e.g. case 8) with 50 branches.
+ *  - convert_txt_to_root.cpp  : add a new case (e.g. case 8) with 51 branches.
  *  - processing.csh           : add this script name → convert_arg3 mapping.
  */
 
@@ -291,6 +292,22 @@ public class PIDDataTrainingScript {
         return nphe
     }
 
+    // ── LTCC nphe — REC::Cherenkov detector=16, sum over pindex ──────────────
+    // LTCC has lower refractive index than HTCC: π fires above ~2.7 GeV/c,
+    // K above ~9.6 GeV/c. Potentially useful for π/K separation in the 2.7-9.6
+    // GeV band where FTOF chi2pid struggles, IF the LTCC has full coverage.
+    static double extractLTCC(int hadron_row, HipoDataBank cc_bank) {
+        if (!cc_bank) return MISSING
+        double nphe = MISSING
+        for (int i = 0; i < cc_bank.rows(); i++) {
+            if (cc_bank.getInt("pindex", i) != hadron_row) continue
+            if (cc_bank.getInt("detector", i) != 16) continue
+            double v = cc_bank.getFloat("nphe", i)
+            nphe = (nphe == MISSING) ? v : nphe + v
+        }
+        return nphe
+    }
+
     // ── RICH extraction — ported from TwoParticles.java:115-138 ──────────────
     // Bank types (Hayward commit 8f7d83cf6): emilay/emico=Byte, emqua/best_PID=Short, rest=Float
     // Returns [emilay, emico, emqua, best_PID, RQ, ReQ, el_logl, pi_logl, k_logl, pr_logl,
@@ -373,7 +390,7 @@ public class PIDDataTrainingScript {
     public static void main(String[] args) {
 
         long startTime = System.currentTimeMillis()
-        final int N_COLUMNS = 50
+        final int N_COLUMNS = 51
         println("=" * 72)
         println("processing_data_pid_training.groovy  —  ML PID training ntuple (DATA)")
         println("Output: ${N_COLUMNS} columns per FD hadron track.  See header for column map.")
@@ -706,11 +723,12 @@ public class PIDDataTrainingScript {
 
                     // ── HTCC nphe ──────────────────────────────────────────────
                     double nphe_htcc = extractHTCC(row, banks["REC::Cherenkov"])
+                    double nphe_ltcc = extractLTCC(row, banks["REC::Cherenkov"])
 
                     // ── RICH variables ─────────────────────────────────────────
                     double[] rich = extractRICH(row, banks["RICH::Particle"])
 
-                    // ── Assemble output row (50 columns; see header + final println) ──
+                    // ── Assemble output row (51 columns; see header + final println) ──
                     StringBuilder row_sb = new StringBuilder()
                     // Event-level
                     row_sb.append(runnum).append(' ').append(evnum).append(' ').append(helicity).append(' ')
@@ -720,7 +738,7 @@ public class PIDDataTrainingScript {
                     row_sb.append(pid).append(' ').append(h_p).append(' ').append(h_theta).append(' ')
                     row_sb.append(h_phi).append(' ').append(h_vz).append(' ').append(h_sector).append(' ')
                     row_sb.append(h_status).append(' ')
-                    // ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc
+                    // ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc + nphe_ltcc
                     row_sb.append(beta).append(' ').append(chi2pid).append(' ')
                     row_sb.append(ftof[0]).append(' ').append(ftof[1]).append(' ')  // energy 1A, 1B
                     row_sb.append(ftof[2]).append(' ').append(ftof[3]).append(' ')  // time 1A, 1B
@@ -729,6 +747,7 @@ public class PIDDataTrainingScript {
                     row_sb.append(ecal[4]).append(' ').append(ecal[7]).append(' ')  // ecin_t, ecout_t
                     row_sb.append(ecal[5]).append(' ').append(ecal[8]).append(' ')  // ecin_path, ecout_path
                     row_sb.append(nphe_htcc).append(' ')
+                    row_sb.append(nphe_ltcc).append(' ')
                     // PCAL + FTOF layer 2
                     row_sb.append(ecal[0]).append(' ').append(ecal[1]).append(' ').append(ecal[2]).append(' ')
                     row_sb.append(ftof[6]).append(' ').append(ftof[7]).append(' ').append(ftof[8]).append(' ')
@@ -777,21 +796,22 @@ public class PIDDataTrainingScript {
         println("  4:Q2  5:W  6:x  7:y  8:nu")
         println(" PER-TRACK KINEMATICS:")
         println("  9:pid  10:p  11:theta  12:phi  13:vz  14:sector  15:status")
-        println(" ML FEATURES (13 features: beta + FTOF 1A/1B + ECAL inner/outer; + chi2pid + nphe_htcc):")
+        println(" ML FEATURES (16 features: beta + FTOF 1A/1B + ECAL inner/outer; + chi2pid + nphe_htcc + nphe_ltcc):")
         println("  16:beta  17:chi2pid")
         println("  18:ftof_energy_1A  19:ftof_energy_1B  20:ftof_time_1A  21:ftof_time_1B")
         println("  22:ftof_path_1A  23:ftof_path_1B")
         println("  24:ecin_energy  25:ecout_energy  26:ecin_time  27:ecout_time")
         println("  28:ecin_path  29:ecout_path")
         println("  30:nphe_htcc")
+        println("  31:nphe_ltcc")
         println(" PCAL + FTOF LAYER 2 (included for completeness; evaluate for training):")
-        println("  31:pcal_energy  32:pcal_time  33:pcal_path")
-        println("  34:ftof_energy_2  35:ftof_time_2  36:ftof_path_2")
+        println("  32:pcal_energy  33:pcal_time  34:pcal_path")
+        println("  35:ftof_energy_2  36:ftof_time_2  37:ftof_path_2")
         println(" RICH CROSS-CHECK (NOT training features):")
-        println("  37:rich_emilay  38:rich_emico  39:rich_emqua  40:rich_best_PID")
-        println("  41:rich_RQ  42:rich_ReQ")
-        println("  43:rich_el_logl  44:rich_pi_logl  45:rich_k_logl  46:rich_pr_logl")
-        println("  47:rich_best_ch  48:rich_best_c2  49:rich_best_RL  50:rich_best_ntot")
+        println("  38:rich_emilay  39:rich_emico  40:rich_emqua  41:rich_best_PID")
+        println("  42:rich_RQ  43:rich_ReQ")
+        println("  44:rich_el_logl  45:rich_pi_logl  46:rich_k_logl  47:rich_pr_logl")
+        println("  48:rich_best_ch  49:rich_best_c2  50:rich_best_RL  51:rich_best_ntot")
         println("=" * 72)
         println("Output file: ${output_file}")
         println("Events processed: ${num_events}")

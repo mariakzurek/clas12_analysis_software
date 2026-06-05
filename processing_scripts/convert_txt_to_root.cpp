@@ -292,8 +292,10 @@ int main(int argc, char *argv[]) {
     double pcal_energy,  pcal_time,    pcal_path;
     // HTCC (col 30)
     double nphe_htcc;
+    // LTCC (col 31)
+    double nphe_ltcc;
     // RICH variables — all stored as double (groovy writes via double[] with -9999.0 sentinel)
-    // cols 37-50
+    // cols 38-51
     double rich_emilay, rich_emico, rich_emqua, rich_best_PID;
     double rich_RQ, rich_ReQ, rich_el_logl, rich_pi_logl, rich_k_logl, rich_pr_logl;
     double rich_best_ch, rich_best_c2, rich_best_RL, rich_best_ntot;
@@ -1166,9 +1168,9 @@ int main(int argc, char *argv[]) {
     }
 
     // ── Case for ML PID training script (script_index == 7) ──────────────────
-    // 53 columns total.  is_mc=1 for clasdis MC; is_mc=0 for real data.
-    // The groovy always writes all 53 columns regardless of is_mc; MC-truth
-    // columns (51-53) are -9999 when run on real data.  Both paths use the
+    // 54 columns total.  is_mc=1 for clasdis MC; is_mc=0 for real data.
+    // The groovy always writes all 54 columns regardless of is_mc; MC-truth
+    // columns (52-54) are -9999 when run on real data.  Both paths use the
     // same branch layout.
     // Branch names match the groovy's column-map println exactly.
     // RICH fields stored as /D because extractRICH() returns double[] and the
@@ -1212,15 +1214,17 @@ int main(int argc, char *argv[]) {
         tree->Branch("ecout_path",      &ecout_path,      "ecout_path/D");
         // --- HTCC (col 30) ---
         tree->Branch("nphe_htcc",       &nphe_htcc,       "nphe_htcc/D");
-        // --- PCAL (cols 31-33) ---
+        // --- LTCC (col 31) ---
+        tree->Branch("nphe_ltcc",       &nphe_ltcc,       "nphe_ltcc/D");
+        // --- PCAL (cols 32-34) ---
         tree->Branch("pcal_energy",     &pcal_energy,     "pcal_energy/D");
         tree->Branch("pcal_time",       &pcal_time,       "pcal_time/D");
         tree->Branch("pcal_path",       &pcal_path,       "pcal_path/D");
-        // --- FTOF LAYER 2 (cols 34-36) ---
+        // --- FTOF LAYER 2 (cols 35-37) ---
         tree->Branch("ftof_energy_2",   &ftof_energy_2,   "ftof_energy_2/D");
         tree->Branch("ftof_time_2",     &ftof_time_2,     "ftof_time_2/D");
         tree->Branch("ftof_path_2",     &ftof_path_2,     "ftof_path_2/D");
-        // --- RICH (cols 37-50) — all /D (groovy stores via double[] with -9999.0 sentinel) ---
+        // --- RICH (cols 38-51) — all /D (groovy stores via double[] with -9999.0 sentinel) ---
         tree->Branch("rich_emilay",     &rich_emilay,     "rich_emilay/D");
         tree->Branch("rich_emico",      &rich_emico,      "rich_emico/D");
         tree->Branch("rich_emqua",      &rich_emqua,      "rich_emqua/D");
@@ -1235,15 +1239,15 @@ int main(int argc, char *argv[]) {
         tree->Branch("rich_best_c2",    &rich_best_c2,    "rich_best_c2/D");
         tree->Branch("rich_best_RL",    &rich_best_RL,    "rich_best_RL/D");
         tree->Branch("rich_best_ntot",  &rich_best_ntot,  "rich_best_ntot/D");
-        // --- MC TRUTH (cols 51-53) ---
+        // --- MC TRUTH (cols 52-54) ---
         tree->Branch("mc_matching_pid", &mc_matching_pid_i, "mc_matching_pid/I");
         tree->Branch("mc_parent_pid",   &mc_parent_pid_i,   "mc_parent_pid/I");
         tree->Branch("mc_match_quality",&mc_match_quality,  "mc_match_quality/D");
     }
 
     // ── Case for ML PID training — DATA script (script_index == 8) ───────────
-    // 50 columns total.  Identical layout to case 7 but the three MC-truth
-    // columns (51-53: mc_matching_pid, mc_parent_pid, mc_match_quality) are
+    // 51 columns total.  Identical layout to case 7 but the three MC-truth
+    // columns (52-54: mc_matching_pid, mc_parent_pid, mc_match_quality) are
     // absent.  is_mc is always 0 for this script; accept both 0 and 1 for
     // robustness (groovy itself does not write MC truth columns regardless).
     // Branch names match the groovy's column-map println exactly.
@@ -1286,15 +1290,17 @@ int main(int argc, char *argv[]) {
         tree->Branch("ecout_path",      &ecout_path,      "ecout_path/D");
         // --- HTCC (col 30) ---
         tree->Branch("nphe_htcc",       &nphe_htcc,       "nphe_htcc/D");
-        // --- PCAL (cols 31-33) ---
+        // --- LTCC (col 31) ---
+        tree->Branch("nphe_ltcc",       &nphe_ltcc,       "nphe_ltcc/D");
+        // --- PCAL (cols 32-34) ---
         tree->Branch("pcal_energy",     &pcal_energy,     "pcal_energy/D");
         tree->Branch("pcal_time",       &pcal_time,       "pcal_time/D");
         tree->Branch("pcal_path",       &pcal_path,       "pcal_path/D");
-        // --- FTOF LAYER 2 (cols 34-36) ---
+        // --- FTOF LAYER 2 (cols 35-37) ---
         tree->Branch("ftof_energy_2",   &ftof_energy_2,   "ftof_energy_2/D");
         tree->Branch("ftof_time_2",     &ftof_time_2,     "ftof_time_2/D");
         tree->Branch("ftof_path_2",     &ftof_path_2,     "ftof_path_2/D");
-        // --- RICH (cols 37-50) — all /D (groovy stores via double[] with -9999.0 sentinel) ---
+        // --- RICH (cols 38-51) — all /D (groovy stores via double[] with -9999.0 sentinel) ---
         tree->Branch("rich_emilay",     &rich_emilay,     "rich_emilay/D");
         tree->Branch("rich_emico",      &rich_emico,      "rich_emico/D");
         tree->Branch("rich_emqua",      &rich_emqua,      "rich_emqua/D");
@@ -1309,7 +1315,7 @@ int main(int argc, char *argv[]) {
         tree->Branch("rich_best_c2",    &rich_best_c2,    "rich_best_c2/D");
         tree->Branch("rich_best_RL",    &rich_best_RL,    "rich_best_RL/D");
         tree->Branch("rich_best_ntot",  &rich_best_ntot,  "rich_best_ntot/D");
-        // No MC truth columns — this is the data script (50 columns total).
+        // No MC truth columns — this is the data script (51 columns total).
     }
 
     // Find the root directory of the repository
@@ -1738,11 +1744,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // ── ML PID training script (script_index == 7) — 53 columns ─────────────
+    // ── ML PID training script (script_index == 7) — 54 columns ─────────────
     // Column order matches the StringBuilder append block in
     // processing_mc_pid_training.groovy exactly (ground truth).
-    // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1)
-    //   + PCAL(3) + FTOF2(3) + RICH(14) + MCTRUTH(3) = 53
+    // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1) + LTCC(1)
+    //   + PCAL(3) + FTOF2(3) + RICH(14) + MCTRUTH(3) = 54
     if (script_index == 7 && (is_mc == 0 || is_mc == 1)) {
         while (
             // EVENT-LEVEL (cols 1-8)
@@ -1765,16 +1771,18 @@ int main(int argc, char *argv[]) {
                 ecin_path   >> ecout_path   >>
             // HTCC (col 30)
                 nphe_htcc >>
-            // PCAL: energy, time, path (cols 31-33)
+            // LTCC (col 31)
+                nphe_ltcc >>
+            // PCAL: energy, time, path (cols 32-34)
                 pcal_energy >> pcal_time >> pcal_path >>
-            // FTOF LAYER 2: energy, time, path (cols 34-36)
+            // FTOF LAYER 2: energy, time, path (cols 35-37)
                 ftof_energy_2 >> ftof_time_2 >> ftof_path_2 >>
-            // RICH (cols 37-50)
+            // RICH (cols 38-51)
                 rich_emilay >> rich_emico >> rich_emqua >> rich_best_PID >>
                 rich_RQ >> rich_ReQ >>
                 rich_el_logl >> rich_pi_logl >> rich_k_logl >> rich_pr_logl >>
                 rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot >>
-            // MC TRUTH (cols 51-53)
+            // MC TRUTH (cols 52-54)
             // Read PIDs as double to tolerate groovy's ".0" suffix, cast to int for /I branch.
                 mc_matching_pid_d >> mc_parent_pid_d >> mc_match_quality
         ) {
@@ -1784,11 +1792,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // ── ML PID training — DATA script (script_index == 8) — 50 columns ───────
+    // ── ML PID training — DATA script (script_index == 8) — 51 columns ───────
     // Column order matches the StringBuilder append block in
     // processing_data_pid_training.groovy exactly (ground truth).
-    // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1)
-    //   + PCAL(3) + FTOF2(3) + RICH(14) = 50  (no MC truth columns)
+    // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1) + LTCC(1)
+    //   + PCAL(3) + FTOF2(3) + RICH(14) = 51  (no MC truth columns)
     if (script_index == 8 && (is_mc == 0 || is_mc == 1)) {
         while (
             // EVENT-LEVEL (cols 1-8)
@@ -1811,11 +1819,13 @@ int main(int argc, char *argv[]) {
                 ecin_path   >> ecout_path   >>
             // HTCC (col 30)
                 nphe_htcc >>
-            // PCAL: energy, time, path (cols 31-33)
+            // LTCC (col 31)
+                nphe_ltcc >>
+            // PCAL: energy, time, path (cols 32-34)
                 pcal_energy >> pcal_time >> pcal_path >>
-            // FTOF LAYER 2: energy, time, path (cols 34-36)
+            // FTOF LAYER 2: energy, time, path (cols 35-37)
                 ftof_energy_2 >> ftof_time_2 >> ftof_path_2 >>
-            // RICH (cols 37-50)
+            // RICH (cols 38-51)
                 rich_emilay >> rich_emico >> rich_emqua >> rich_best_PID >>
                 rich_RQ >> rich_ReQ >>
                 rich_el_logl >> rich_pi_logl >> rich_k_logl >> rich_pr_logl >>
