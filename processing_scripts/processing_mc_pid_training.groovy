@@ -16,12 +16,14 @@
  *     hadron track with pid ∈ {+211, +321, +2212} (positive hadrons only) that
  *     also passes:
  *       (a) generic_tests.forward_detector_cut()  — |status| ∈ [2000, 4000)
- *       (b) generic_tests.vertex_cut()             — vz window per run period
+ *       (b) connorHadronVertexCut()               — |vz_e - vz_hadron| < 20 cm
+ *                                                   (Connor Pecar, Section IV.C.1)
  *       (c) fiducial_cuts.dc_fiducial_cut()        — DC region edge cuts
- *     NOTE: vertex_cut is intentionally applied to ALL hadrons (including protons).
+ *     NOTE: hadron vertex cut (b) is applied to ALL hadrons (including protons).
  *     This diverges from analysis_fitter.proton_test(), which has vertex_cut
- *     commented out as a known bug. Here vertex_cut is an acceptance/quality cut
- *     (rejects ghost tracks with |vz|>10 cm), not a species-specific PID cut.
+ *     commented out as a known bug. Here connorHadronVertexCut is an
+ *     acceptance/quality cut (rejects ghost tracks with bad vz relative to the
+ *     trigger electron), not a species-specific PID cut.
  *     We do NOT replicate that bug in the training ntuple.
  *     NO chi2pid filter — chi2pid is written as a feature (col 17), not used as a cut.
  *  3. Reads per-track detector-response variables directly from HIPO banks (no
@@ -142,17 +144,46 @@ public class PIDTrainingScript {
         }
     }
 
+    // ── Connor's electron vertex cut (Pecar analysis note, Section IV.C.1) ─────
+    //   Inbending  (torus ≤ 0):  -8 cm < vz_e < +2 cm
+    //   Outbending (torus > 0): -11 cm < vz_e < +1 cm
+    // Single absolute window, polarity-dependent. Same for all run periods.
+    // Replaces generic_tests.vertex_cut for the trigger electron.
+    static boolean connorElectronVertexCut(HipoDataBank rec, HipoDataBank run) {
+        if (!rec || !run) return false
+        if (rec.rows() == 0) return false
+        double vz_e   = rec.getFloat("vz", 0)
+        float  torus  = run.getFloat("torus", 0)
+        boolean inbending = (torus <= 0)
+        double vz_lo = inbending ? -8.0 : -11.0
+        double vz_hi = inbending ?  2.0 :   1.0
+        return (vz_e > vz_lo && vz_e < vz_hi)
+    }
+
+    // ── Connor's hadron vertex cut (Pecar analysis note, Section IV.C.1) ──────
+    //   |vz_e - vz_hadron| < 20 cm
+    // Relative cut (hadron vertex within 20 cm of the trigger electron vertex).
+    // Polarity-independent, same for all charge signs and run periods.
+    // Replaces generic_tests.vertex_cut for hadrons.
+    static boolean connorHadronVertexCut(int row, HipoDataBank rec) {
+        if (!rec) return false
+        if (rec.rows() == 0 || row >= rec.rows()) return false
+        double vz_e = rec.getFloat("vz", 0)
+        double vz_h = rec.getFloat("vz", row)
+        return (Math.abs(vz_e - vz_h) < 20.0)
+    }
+
     // ── Electron filter — requires pid==11 at row 0 + primitive cut composition ─
     // Cuts mirror analysis_fitter.electron_test() but are built directly from
     // generic_tests, pid_cuts, and fiducial_cuts primitives (no analysis_fitter).
     // Signatures verified against Java source:
     //   generic_tests.forward_detector_cut(int idx, HipoDataBank rec)
-    //   generic_tests.vertex_cut(int idx, HipoDataBank rec, HipoDataBank run)
     //   pid_cuts.calorimeter_energy_cut(int idx, HipoDataBank cal, HipoDataBank run)
     //   pid_cuts.calorimeter_sampling_fraction_cut(int idx, double p, HipoDataBank run, HipoDataBank cal)
     //   pid_cuts.calorimeter_diagonal_cut(int idx, double p, HipoDataBank cal, HipoDataBank run)
     //   fiducial_cuts.pcal_fiducial_cut(int idx, int strictness, HipoDataBank run, HipoDataBank rec, HipoDataBank cal)
     //   fiducial_cuts.dc_fiducial_cut(int idx, HipoDataBank rec, HipoDataBank traj, HipoDataBank run)
+    // Electron vertex cut: connorElectronVertexCut (replaces generic_tests.vertex_cut).
     static boolean passElectronCuts(Map banks) {
         def rec  = banks["REC::Particle"]
         def cal  = banks["REC::Calorimeter"]
@@ -167,7 +198,7 @@ public class PIDTrainingScript {
 
         return p_e > 2.0 &&
                GENERIC_TESTS.forward_detector_cut(0, rec) &&
-               GENERIC_TESTS.vertex_cut(0, rec, run) &&
+               connorElectronVertexCut(rec, run) &&
                PID_CUTS.calorimeter_energy_cut(0, cal, run) &&
                PID_CUTS.calorimeter_sampling_fraction_cut(0, p_e, run, cal) &&
                PID_CUTS.calorimeter_diagonal_cut(0, p_e, cal, run) &&
@@ -179,18 +210,18 @@ public class PIDTrainingScript {
     // Built directly from generic_tests and fiducial_cuts primitives.
     // Signatures verified against Java source:
     //   generic_tests.forward_detector_cut(int idx, HipoDataBank rec)
-    //   generic_tests.vertex_cut(int idx, HipoDataBank rec, HipoDataBank run)
     //   fiducial_cuts.dc_fiducial_cut(int idx, HipoDataBank rec, HipoDataBank traj, HipoDataBank run)
-    // Vertex cut is an acceptance/quality cut (rejects ghost tracks with bad vz),
-    // NOT a PID cut. Without it, ghost tracks with |vz|>10 cm leak into the ntuple
-    // (verified empirically: removes ~3% of EB-π+ that are unmatched to any MC particle).
+    // Hadron vertex cut: connorHadronVertexCut (|vz_e - vz_h| < 20 cm, replaces
+    //   generic_tests.vertex_cut). Rejects ghost tracks with bad vz relative to
+    //   the trigger electron (verified empirically: removes ~3% of EB-π+ that are
+    //   unmatched to any MC particle). NOT a PID cut.
     static boolean passHadronCuts(int row, Map banks) {
         def rec  = banks["REC::Particle"]
         def traj = banks["REC::Traj"]
         def run  = banks["RUN::config"]
         if (!rec || !traj || !run) return false
         if (!GENERIC_TESTS.forward_detector_cut(row, rec)) return false
-        if (!GENERIC_TESTS.vertex_cut(row, rec, run)) return false
+        if (!connorHadronVertexCut(row, rec)) return false
         return FIDUCIAL_CUTS.dc_fiducial_cut(row, rec, traj, run)
     }
 
