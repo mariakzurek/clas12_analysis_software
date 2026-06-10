@@ -271,10 +271,14 @@ int main(int argc, char *argv[]) {
     double traj_x_12, traj_y_12, traj_z_12, traj_edge_12;
     double ft_energy, ft_x, ft_y, ft_z, ft_radius;
 
-    // Additional variables for ML PID training script (script_index == 7) — 53 columns.
+    // Additional variables for ML PID training script (script_index == 7/8).
+    // MC (case 7): 57 columns total; Data (case 8): 54 columns total.
     // Event-level: runnum, evnum, helicity, Q2, W, x, y all declared above.  nu is new.
     // (e_p, e_theta, e_phi, vz_e removed from this script's output.)
     double nu;
+    // NEW (per-track, cols 55-57 for MC / 52-54 for data): missing-mass hypotheses
+    // Read into double; branch name matches groovy column-map printout exactly.
+    double Mx_epiX, Mx_eKX, Mx_epX;
     // Per-track kinematics (cols 9-15)
     int    pid_h, sector_h, status_h;
     double p_h, theta_h, phi_h, vz_h;
@@ -1168,8 +1172,8 @@ int main(int argc, char *argv[]) {
     }
 
     // ── Case for ML PID training script (script_index == 7) ──────────────────
-    // 54 columns total.  is_mc=1 for clasdis MC; is_mc=0 for real data.
-    // The groovy always writes all 54 columns regardless of is_mc; MC-truth
+    // 57 columns total.  is_mc=1 for clasdis MC; is_mc=0 for real data.
+    // The groovy always writes all 57 columns regardless of is_mc; MC-truth
     // columns (52-54) are -9999 when run on real data.  Both paths use the
     // same branch layout.
     // Branch names match the groovy's column-map println exactly.
@@ -1243,13 +1247,18 @@ int main(int argc, char *argv[]) {
         tree->Branch("mc_matching_pid", &mc_matching_pid_i, "mc_matching_pid/I");
         tree->Branch("mc_parent_pid",   &mc_parent_pid_i,   "mc_parent_pid/I");
         tree->Branch("mc_match_quality",&mc_match_quality,  "mc_match_quality/D");
+        // --- MISSING-MASS HYPOTHESES (cols 55-57) — appended at end ---
+        tree->Branch("Mx_epiX",         &Mx_epiX,           "Mx_epiX/D");
+        tree->Branch("Mx_eKX",          &Mx_eKX,            "Mx_eKX/D");
+        tree->Branch("Mx_epX",          &Mx_epX,            "Mx_epX/D");
     }
 
     // ── Case for ML PID training — DATA script (script_index == 8) ───────────
-    // 51 columns total.  Identical layout to case 7 but the three MC-truth
-    // columns (52-54: mc_matching_pid, mc_parent_pid, mc_match_quality) are
-    // absent.  is_mc is always 0 for this script; accept both 0 and 1 for
-    // robustness (groovy itself does not write MC truth columns regardless).
+    // 54 columns total.  Identical layout to case 7 but the three MC-truth
+    // columns (mc_matching_pid, mc_parent_pid, mc_match_quality) are absent.
+    // Missing-mass hypotheses (cols 52-54) are present.
+    // is_mc is always 0 for this script; accept both 0 and 1 for robustness
+    // (groovy itself does not write MC truth columns regardless).
     // Branch names match the groovy's column-map println exactly.
     // RICH fields stored as /D because extractRICH() returns double[] and the
     // groovy writes them via StringBuilder with a -9999.0 sentinel.
@@ -1315,7 +1324,11 @@ int main(int argc, char *argv[]) {
         tree->Branch("rich_best_c2",    &rich_best_c2,    "rich_best_c2/D");
         tree->Branch("rich_best_RL",    &rich_best_RL,    "rich_best_RL/D");
         tree->Branch("rich_best_ntot",  &rich_best_ntot,  "rich_best_ntot/D");
-        // No MC truth columns — this is the data script (51 columns total).
+        // --- MISSING-MASS HYPOTHESES (cols 52-54) — appended at end ---
+        tree->Branch("Mx_epiX",         &Mx_epiX,           "Mx_epiX/D");
+        tree->Branch("Mx_eKX",          &Mx_eKX,            "Mx_eKX/D");
+        tree->Branch("Mx_epX",          &Mx_epX,            "Mx_epX/D");
+        // No MC truth columns — this is the data script (54 columns total).
     }
 
     // Find the root directory of the repository
@@ -1744,11 +1757,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // ── ML PID training script (script_index == 7) — 54 columns ─────────────
+    // ── ML PID training script (script_index == 7) — 57 columns ─────────────
     // Column order matches the StringBuilder append block in
     // processing_mc_pid_training.groovy exactly (ground truth).
     // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1) + LTCC(1)
-    //   + PCAL(3) + FTOF2(3) + RICH(14) + MCTRUTH(3) = 54
+    //   + PCAL(3) + FTOF2(3) + RICH(14) + MCTRUTH(3) + MXHYP(3) = 57
     if (script_index == 7 && (is_mc == 0 || is_mc == 1)) {
         while (
             // EVENT-LEVEL (cols 1-8)
@@ -1784,7 +1797,9 @@ int main(int argc, char *argv[]) {
                 rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot >>
             // MC TRUTH (cols 52-54)
             // Read PIDs as double to tolerate groovy's ".0" suffix, cast to int for /I branch.
-                mc_matching_pid_d >> mc_parent_pid_d >> mc_match_quality
+                mc_matching_pid_d >> mc_parent_pid_d >> mc_match_quality >>
+            // MISSING-MASS HYPOTHESES (cols 55-57)
+                Mx_epiX >> Mx_eKX >> Mx_epX
         ) {
             mc_matching_pid_i = (int)mc_matching_pid_d;
             mc_parent_pid_i   = (int)mc_parent_pid_d;
@@ -1792,11 +1807,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // ── ML PID training — DATA script (script_index == 8) — 51 columns ───────
+    // ── ML PID training — DATA script (script_index == 8) — 54 columns ───────
     // Column order matches the StringBuilder append block in
     // processing_data_pid_training.groovy exactly (ground truth).
     // EVENT(8) + TRACK(7) + MLFEATS(2) + FTOF1(6) + ECAL(6) + HTCC(1) + LTCC(1)
-    //   + PCAL(3) + FTOF2(3) + RICH(14) = 51  (no MC truth columns)
+    //   + PCAL(3) + FTOF2(3) + RICH(14) + MXHYP(3) = 54  (no MC truth columns)
     if (script_index == 8 && (is_mc == 0 || is_mc == 1)) {
         while (
             // EVENT-LEVEL (cols 1-8)
@@ -1829,7 +1844,9 @@ int main(int argc, char *argv[]) {
                 rich_emilay >> rich_emico >> rich_emqua >> rich_best_PID >>
                 rich_RQ >> rich_ReQ >>
                 rich_el_logl >> rich_pi_logl >> rich_k_logl >> rich_pr_logl >>
-                rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot
+                rich_best_ch >> rich_best_c2 >> rich_best_RL >> rich_best_ntot >>
+            // MISSING-MASS HYPOTHESES (cols 52-54)
+                Mx_epiX >> Mx_eKX >> Mx_epX
         ) {
             tree->Fill();
         }

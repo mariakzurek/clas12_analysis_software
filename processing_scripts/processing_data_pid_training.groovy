@@ -75,7 +75,7 @@
  *  decide to impute, drop, or use missingness itself as a feature (missingness
  *  in PCAL and FTOF layer 2 is physically meaningful for PID).
  *
- * ─── Output columns (51 total) ────────────────────────────────────────────────
+ * ─── Output columns (54 total) ────────────────────────────────────────────────
  *  Event-level (8):
  *   1  runnum          2  evnum           3  helicity
  *   4  Q2              5  W
@@ -84,6 +84,12 @@
  *   9  pid             10 p               11 theta
  *   12 phi             13 vz              14 sector
  *   15 status
+ *  Per-track missing mass (3) — appended at end, NOT ML features:
+ *   52 Mx_epiX  (missing mass with pi+ hypothesis, m_h = 0.139570 GeV)
+ *   53 Mx_eKX   (missing mass with K+  hypothesis, m_h = 0.493677 GeV)
+ *   54 Mx_epX   (missing mass with p   hypothesis, m_h = 0.938272 GeV)
+ *   Sentinel: -9999 when M_X^2 < 0 (unphysical). Masses from kinematic_variables.java.
+ *   Electron 4-vector from corrected e_px/e_py/e_pz (Capobianco). Beam energy from `Eb`.
  *  Per-track ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc + nphe_ltcc (16):
  *   16 beta            17 chi2pid
  *   18 ftof_energy_1A  19 ftof_energy_1B  20 ftof_time_1A   21 ftof_time_1B
@@ -143,6 +149,14 @@ public class PIDDataTrainingScript {
 
     // ── Constants ──────────────────────────────────────────────────────────────
     static final double MISSING = -9999.0
+
+    // ── PDG mass constants for missing-mass hypotheses ─────────────────────────
+    // Values taken verbatim from kinematic_variables.particle_mass() (lines 29,35,37,39).
+    // Any future PDG update must be propagated in lockstep with kinematic_variables.java.
+    static final double M_ELECTRON = 0.0005109989461  // GeV  (kinematic_variables.java:29)
+    static final double M_PIPLUS   = 0.139570          // GeV  (kinematic_variables.java:35)
+    static final double M_KPLUS    = 0.493677          // GeV  (kinematic_variables.java:37)
+    static final double M_PROTON   = 0.938272          // GeV  (kinematic_variables.java:39)
 
     // ── Stateless helper instances (hoisted to avoid per-track allocation) ─────
     static final generic_tests       GENERIC_TESTS = new generic_tests()
@@ -421,7 +435,7 @@ public class PIDDataTrainingScript {
     public static void main(String[] args) {
 
         long startTime = System.currentTimeMillis()
-        final int N_COLUMNS = 51
+        final int N_COLUMNS = 54
         println("=" * 72)
         println("processing_data_pid_training.groovy  —  ML PID training ntuple (DATA)")
         println("Output: ${N_COLUMNS} columns per FD hadron track.  See header for column map.")
@@ -759,7 +773,36 @@ public class PIDDataTrainingScript {
                     // ── RICH variables ─────────────────────────────────────────
                     double[] rich = extractRICH(row, banks["RICH::Particle"])
 
-                    // ── Assemble output row (51 columns; see header + final println) ──
+                    // ── Missing-mass hypotheses (per-track, 3 values) ──────────
+                    // Formula: Mx^2 = (E_beam + M_p - E_e - E_h)^2
+                    //                 - (-e_px - h_px)^2 - (-e_py - h_py)^2
+                    //                 - (p_beam - e_pz - h_pz)^2
+                    // Uses beam-energy variable `Eb` (per-event, computed above from run table).
+                    // Uses corrected scattered electron 4-vector (e_px/e_py/e_pz from Capobianco
+                    // block above; h_px/h_py/h_pz are post-correction hadron momenta).
+                    // Sentinel MISSING (-9999) written when M_X^2 < 0 (unphysical).
+                    double e_E_mx   = Math.sqrt(e_px*e_px + e_py*e_py + e_pz*e_pz + M_ELECTRON*M_ELECTRON)
+                    double p_beam_mx = Math.sqrt(Math.max(0.0, Eb*Eb - M_ELECTRON*M_ELECTRON))
+                    double miss_px_mx = -e_px - h_px
+                    double miss_py_mx = -e_py - h_py
+                    double miss_pz_mx =  p_beam_mx - e_pz - h_pz
+                    // pi+ hypothesis
+                    double E_h_pi_mx  = Math.sqrt(h_p*h_p + M_PIPLUS*M_PIPLUS)
+                    double miss_E_pi_mx = Eb + M_PROTON - e_E_mx - E_h_pi_mx
+                    double Mx2_pi_mx = miss_E_pi_mx*miss_E_pi_mx - miss_px_mx*miss_px_mx - miss_py_mx*miss_py_mx - miss_pz_mx*miss_pz_mx
+                    double Mx_epiX = (Mx2_pi_mx >= 0.0) ? Math.sqrt(Mx2_pi_mx) : MISSING
+                    // K+ hypothesis
+                    double E_h_K_mx   = Math.sqrt(h_p*h_p + M_KPLUS*M_KPLUS)
+                    double miss_E_K_mx  = Eb + M_PROTON - e_E_mx - E_h_K_mx
+                    double Mx2_K_mx  = miss_E_K_mx*miss_E_K_mx - miss_px_mx*miss_px_mx - miss_py_mx*miss_py_mx - miss_pz_mx*miss_pz_mx
+                    double Mx_eKX  = (Mx2_K_mx  >= 0.0) ? Math.sqrt(Mx2_K_mx)  : MISSING
+                    // proton hypothesis
+                    double E_h_p_mx   = Math.sqrt(h_p*h_p + M_PROTON*M_PROTON)
+                    double miss_E_p_mx  = Eb + M_PROTON - e_E_mx - E_h_p_mx
+                    double Mx2_p_mx  = miss_E_p_mx*miss_E_p_mx - miss_px_mx*miss_px_mx - miss_py_mx*miss_py_mx - miss_pz_mx*miss_pz_mx
+                    double Mx_epX  = (Mx2_p_mx  >= 0.0) ? Math.sqrt(Mx2_p_mx)  : MISSING
+
+                    // ── Assemble output row (54 columns; see header + final println) ──
                     StringBuilder row_sb = new StringBuilder()
                     // Event-level
                     row_sb.append(runnum).append(' ').append(evnum).append(' ').append(helicity).append(' ')
@@ -782,11 +825,10 @@ public class PIDDataTrainingScript {
                     // PCAL + FTOF layer 2
                     row_sb.append(ecal[0]).append(' ').append(ecal[1]).append(' ').append(ecal[2]).append(' ')
                     row_sb.append(ftof[6]).append(' ').append(ftof[7]).append(' ').append(ftof[8]).append(' ')
-                    // RICH (14 vars) — last var has no trailing space; newline appended below
-                    for (int ri = 0; ri < rich.length - 1; ri++) {
-                        row_sb.append(rich[ri]).append(' ')
-                    }
-                    row_sb.append(rich[rich.length - 1])
+                    // RICH (14 vars)
+                    rich.each { row_sb.append(it).append(' ') }
+                    // Missing-mass hypotheses (cols 52-54) — appended at end (defensive ordering)
+                    row_sb.append(Mx_epiX).append(' ').append(Mx_eKX).append(' ').append(Mx_epX)
                     row_sb.append('\n')
 
                     batchLines.append(row_sb)
@@ -843,6 +885,10 @@ public class PIDDataTrainingScript {
         println("  42:rich_RQ  43:rich_ReQ")
         println("  44:rich_el_logl  45:rich_pi_logl  46:rich_k_logl  47:rich_pr_logl")
         println("  48:rich_best_ch  49:rich_best_c2  50:rich_best_RL  51:rich_best_ntot")
+        println(" MISSING-MASS HYPOTHESES (appended; NOT ML features):")
+        println("  52:Mx_epiX  (e+pi+X missing mass, m_h=0.139570 GeV; -9999 if Mx^2<0)")
+        println("  53:Mx_eKX   (e+K+X  missing mass, m_h=0.493677 GeV; -9999 if Mx^2<0)")
+        println("  54:Mx_epX   (e+p+X  missing mass, m_h=0.938272 GeV; -9999 if Mx^2<0)")
         println("=" * 72)
         println("Output file: ${output_file}")
         println("Events processed: ${num_events}")

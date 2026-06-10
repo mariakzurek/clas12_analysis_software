@@ -41,7 +41,7 @@
  *  missingness itself as a feature (missingness in PCAL and FTOF layer 2 is
  *  physically meaningful for PID).
  *
- * ─── Output columns (54 total) ────────────────────────────────────────────────
+ * ─── Output columns (57 total) ────────────────────────────────────────────────
  *  Event-level (8):
  *   1  runnum          2  evnum           3  helicity
  *   4  Q2              5  W
@@ -50,6 +50,11 @@
  *   9  pid             10 p               11 theta
  *   12 phi             13 vz              14 sector
  *   15 status
+ *  Per-track missing mass (3) — appended at end, NOT ML features:
+ *   55 Mx_epiX  (missing mass with pi+ hypothesis, m_h = 0.139570 GeV)
+ *   56 Mx_eKX   (missing mass with K+  hypothesis, m_h = 0.493677 GeV)
+ *   57 Mx_epX   (missing mass with p   hypothesis, m_h = 0.938272 GeV)
+ *   Sentinel: -9999 when M_X^2 < 0 (unphysical). Masses from kinematic_variables.java.
  *  Per-track ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc + nphe_ltcc (16):
  *   16 beta            17 chi2pid
  *   18 ftof_energy_1A  19 ftof_energy_1B  20 ftof_time_1A   21 ftof_time_1B
@@ -107,6 +112,14 @@ public class PIDTrainingScript {
 
     // ── Constants ──────────────────────────────────────────────────────────────
     static final double MISSING = -9999.0
+
+    // ── PDG mass constants for missing-mass hypotheses ─────────────────────────
+    // Values taken verbatim from kinematic_variables.particle_mass() (lines 29,35,37,39).
+    // Any future PDG update must be propagated in lockstep with kinematic_variables.java.
+    static final double M_ELECTRON = 0.0005109989461  // GeV  (kinematic_variables.java:29)
+    static final double M_PIPLUS   = 0.139570          // GeV  (kinematic_variables.java:35)
+    static final double M_KPLUS    = 0.493677          // GeV  (kinematic_variables.java:37)
+    static final double M_PROTON   = 0.938272          // GeV  (kinematic_variables.java:39)
 
     // ── Stateless helper instances (hoisted to avoid per-track allocation) ─────
     static final generic_tests GENERIC_TESTS = new generic_tests()
@@ -489,7 +502,7 @@ public class PIDTrainingScript {
     public static void main(String[] args) {
 
         long startTime = System.currentTimeMillis()
-        final int N_COLUMNS = 54
+        final int N_COLUMNS = 57
         println("=" * 72)
         println("processing_mc_pid_training.groovy  —  ML PID training ntuple")
         println("Output: ${N_COLUMNS} columns per FD hadron track.  See header for column map.")
@@ -585,6 +598,15 @@ public class PIDTrainingScript {
                 // ── Stage 2: load remaining banks (only for events that pass) ──
                 loadRemainingBanks(event, banks)
 
+                // ── Scattered electron 4-vector (re-read from rec_bank row 0) ──
+                // rec_bank row 0 is the trigger electron (guaranteed by passElectronCuts).
+                // No momentum correction applied to MC (see note at line ~623).
+                // These variables are also used below in the per-track Mx computation.
+                double e_px = rec_bank.getFloat("px", 0)
+                double e_py = rec_bank.getFloat("py", 0)
+                double e_pz = rec_bank.getFloat("pz", 0)
+                double e_E  = Math.sqrt(e_px*e_px + e_py*e_py + e_pz*e_pz + M_ELECTRON*M_ELECTRON)
+
                 // ── DIS kinematics via Inclusive analyzer ─────────────────────
                 // Mirrors the convention of processing_inclusive.groovy exactly:
                 //   BeamEnergy Eb = new BeamEnergy(research_Event, runnum, false)
@@ -663,7 +685,34 @@ public class PIDTrainingScript {
                     // ── MC truth matching ──────────────────────────────────────
                     double[] mc = extractMCTruth(h_px, h_py, h_pz, banks["MC::Lund"], banks["MC::Particle"])
 
-                    // ── Assemble output row (54 columns; see header + final println) ──
+                    // ── Missing-mass hypotheses (per-track, 3 values) ──────────
+                    // Formula: Mx^2 = (E_beam + M_p - E_e - E_h)^2
+                    //                 - (-e_px - h_px)^2 - (-e_py - h_py)^2
+                    //                 - (p_beam - e_pz - h_pz)^2
+                    // Uses beam-energy variable `energy` (per-event, set above).
+                    // Uses scattered electron 4-vector (e_px/e_py/e_pz/e_E) re-read above.
+                    // Sentinel MISSING (-9999) written when M_X^2 < 0 (unphysical).
+                    double p_beam_mx = Math.sqrt(Math.max(0.0, energy*energy - M_ELECTRON*M_ELECTRON))
+                    double miss_px = -e_px - h_px
+                    double miss_py = -e_py - h_py
+                    double miss_pz =  p_beam_mx - e_pz - h_pz
+                    // pi+ hypothesis
+                    double E_h_pi  = Math.sqrt(h_p*h_p + M_PIPLUS*M_PIPLUS)
+                    double miss_E_pi = energy + M_PROTON - e_E - E_h_pi
+                    double Mx2_pi = miss_E_pi*miss_E_pi - miss_px*miss_px - miss_py*miss_py - miss_pz*miss_pz
+                    double Mx_epiX = (Mx2_pi >= 0.0) ? Math.sqrt(Mx2_pi) : MISSING
+                    // K+ hypothesis
+                    double E_h_K   = Math.sqrt(h_p*h_p + M_KPLUS*M_KPLUS)
+                    double miss_E_K  = energy + M_PROTON - e_E - E_h_K
+                    double Mx2_K  = miss_E_K*miss_E_K - miss_px*miss_px - miss_py*miss_py - miss_pz*miss_pz
+                    double Mx_eKX  = (Mx2_K  >= 0.0) ? Math.sqrt(Mx2_K)  : MISSING
+                    // proton hypothesis
+                    double E_h_p   = Math.sqrt(h_p*h_p + M_PROTON*M_PROTON)
+                    double miss_E_p  = energy + M_PROTON - e_E - E_h_p
+                    double Mx2_p  = miss_E_p*miss_E_p - miss_px*miss_px - miss_py*miss_py - miss_pz*miss_pz
+                    double Mx_epX  = (Mx2_p  >= 0.0) ? Math.sqrt(Mx2_p)  : MISSING
+
+                    // ── Assemble output row (57 columns; see header + final println) ──
                     StringBuilder row_sb = new StringBuilder()
                     // Event-level
                     row_sb.append(runnum).append(' ').append(evnum).append(' ').append(helicity).append(' ')
@@ -692,7 +741,9 @@ public class PIDTrainingScript {
                     // mc[0] and mc[1] are MC PIDs (integer-valued in the source); cast to int
                     // to ensure the C++ converter (which reads these as /I) parses them.
                     // mc[2] is mc_match_quality, a true double — leave as-is.
-                    row_sb.append((int)mc[0]).append(' ').append((int)mc[1]).append(' ').append(mc[2])
+                    row_sb.append((int)mc[0]).append(' ').append((int)mc[1]).append(' ').append(mc[2]).append(' ')
+                    // Missing-mass hypotheses (cols 55-57) — appended at end (defensive ordering)
+                    row_sb.append(Mx_epiX).append(' ').append(Mx_eKX).append(' ').append(Mx_epX)
                     row_sb.append('\n')
 
                     batchLines.append(row_sb)
@@ -751,6 +802,10 @@ public class PIDTrainingScript {
         println("  48:rich_best_ch  49:rich_best_c2  50:rich_best_RL  51:rich_best_ntot")
         println(" MC TRUTH (geometric match |Δφ|<9°, |Δθ|<3°):")
         println("  52:mc_matching_pid  53:mc_parent_pid  54:mc_match_quality (normalized, smaller=better)")
+        println(" MISSING-MASS HYPOTHESES (appended; NOT ML features):")
+        println("  55:Mx_epiX  (e+pi+X missing mass, m_h=0.139570 GeV; -9999 if Mx^2<0)")
+        println("  56:Mx_eKX   (e+K+X  missing mass, m_h=0.493677 GeV; -9999 if Mx^2<0)")
+        println("  57:Mx_epX   (e+p+X  missing mass, m_h=0.938272 GeV; -9999 if Mx^2<0)")
         println("=" * 72)
         println("Output file: ${output_file}")
         println("Events processed: ${num_events}")
