@@ -41,7 +41,7 @@
  *  missingness itself as a feature (missingness in PCAL and FTOF layer 2 is
  *  physically meaningful for PID).
  *
- * ─── Output columns (57 total) ────────────────────────────────────────────────
+ * ─── Output columns (60 total) ────────────────────────────────────────────────
  *  Event-level (8):
  *   1  runnum          2  evnum           3  helicity
  *   4  Q2              5  W
@@ -55,6 +55,12 @@
  *   56 Mx_eKX   (missing mass with K+  hypothesis, m_h = 0.493677 GeV)
  *   57 Mx_epX   (missing mass with p   hypothesis, m_h = 0.938272 GeV)
  *   Sentinel: -9999 when M_X^2 < 0 (unphysical). Masses from kinematic_variables.java.
+ *  Per-track z (SIDIS energy fraction, 3) — appended at end, NOT ML features:
+ *   58 z_epi   (z assuming pi+ hypothesis, z = sqrt(p^2+M_pi^2)/nu)
+ *   59 z_eK    (z assuming K+  hypothesis, z = sqrt(p^2+M_K^2)/nu)
+ *   60 z_ep    (z assuming p   hypothesis, z = sqrt(p^2+M_p^2)/nu)
+ *   Sentinel: -9999 when nu is missing/non-positive or h_p is the -9999 sentinel.
+ *   z is physically bounded in [0,1] for SIDIS; phase-space tails may give z > 1 — NOT clipped.
  *  Per-track ML features — 13 features (beta + FTOF 1A/1B + ECAL inner/outer) + chi2pid + nphe_htcc + nphe_ltcc (16):
  *   16 beta            17 chi2pid
  *   18 ftof_energy_1A  19 ftof_energy_1B  20 ftof_time_1A   21 ftof_time_1B
@@ -502,7 +508,7 @@ public class PIDTrainingScript {
     public static void main(String[] args) {
 
         long startTime = System.currentTimeMillis()
-        final int N_COLUMNS = 57
+        final int N_COLUMNS = 60
         println("=" * 72)
         println("processing_mc_pid_training.groovy  —  ML PID training ntuple")
         println("Output: ${N_COLUMNS} columns per FD hadron track.  See header for column map.")
@@ -712,7 +718,23 @@ public class PIDTrainingScript {
                     double Mx2_p  = miss_E_p*miss_E_p - miss_px*miss_px - miss_py*miss_py - miss_pz*miss_pz
                     double Mx_epX  = (Mx2_p  >= 0.0) ? Math.sqrt(Mx2_p)  : MISSING
 
-                    // ── Assemble output row (57 columns; see header + final println) ──
+                    // ── SIDIS energy fraction z (per-track, 3 hypotheses) ──────────
+                    // z = E_h / nu, where E_h = sqrt(p^2 + m_h^2) under each mass hypothesis.
+                    // Sentinel -9999 written when nu is missing, undefined, or non-positive.
+                    // h_p sentinel guard: passHadronCuts requires real REC::Particle momentum,
+                    // so h_p < 0 should not occur here, but check defensively.
+                    double z_epi, z_eK, z_ep
+                    if (nu > 0.0 && h_p > 0.0) {
+                        z_epi = Math.sqrt(h_p*h_p + M_PIPLUS*M_PIPLUS) / nu
+                        z_eK  = Math.sqrt(h_p*h_p + M_KPLUS*M_KPLUS)   / nu
+                        z_ep  = Math.sqrt(h_p*h_p + M_PROTON*M_PROTON) / nu
+                    } else {
+                        z_epi = MISSING
+                        z_eK  = MISSING
+                        z_ep  = MISSING
+                    }
+
+                    // ── Assemble output row (60 columns; see header + final println) ──
                     StringBuilder row_sb = new StringBuilder()
                     // Event-level
                     row_sb.append(runnum).append(' ').append(evnum).append(' ').append(helicity).append(' ')
@@ -744,6 +766,8 @@ public class PIDTrainingScript {
                     row_sb.append((int)mc[0]).append(' ').append((int)mc[1]).append(' ').append(mc[2]).append(' ')
                     // Missing-mass hypotheses (cols 55-57) — appended at end (defensive ordering)
                     row_sb.append(Mx_epiX).append(' ').append(Mx_eKX).append(' ').append(Mx_epX)
+                    // Z (SIDIS energy fraction, cols 58-60) — appended after Mx hypotheses
+                    row_sb.append(' ').append(z_epi).append(' ').append(z_eK).append(' ').append(z_ep)
                     row_sb.append('\n')
 
                     batchLines.append(row_sb)
@@ -806,6 +830,10 @@ public class PIDTrainingScript {
         println("  55:Mx_epiX  (e+pi+X missing mass, m_h=0.139570 GeV; -9999 if Mx^2<0)")
         println("  56:Mx_eKX   (e+K+X  missing mass, m_h=0.493677 GeV; -9999 if Mx^2<0)")
         println("  57:Mx_epX   (e+p+X  missing mass, m_h=0.938272 GeV; -9999 if Mx^2<0)")
+        println(" Z (SIDIS ENERGY FRACTION, appended; NOT ML features):")
+        println("  58:z_epi  (z with pi+ hypothesis, sqrt(p^2+M_pi^2)/nu; -9999 if nu<=0)")
+        println("  59:z_eK   (z with K+  hypothesis, sqrt(p^2+M_K^2)/nu;  -9999 if nu<=0)")
+        println("  60:z_ep   (z with p   hypothesis, sqrt(p^2+M_p^2)/nu;  -9999 if nu<=0)")
         println("=" * 72)
         println("Output file: ${output_file}")
         println("Events processed: ${num_events}")
