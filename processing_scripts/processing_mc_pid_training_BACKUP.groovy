@@ -133,7 +133,7 @@ public class PIDTrainingScript {
     // K+ (target species), p (high-momentum K+ contamination via TOF).
     // Negatives (π-, K-, p̄) intentionally dropped — Cooper's K+ analysis
     // uses positive hadrons only. Negative-charge training is future work.
-    static final Set<Integer> HADRON_PIDS = [211,321, 2212] as Set
+    static final Set<Integer> HADRON_PIDS = [211, 321, 2212] as Set
 
     // ── Stage 1: banks needed for the electron filter only ────────────────────
     // Called for every event. Cheap set — avoids loading expensive banks
