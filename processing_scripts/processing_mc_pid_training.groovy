@@ -136,10 +136,16 @@ public class PIDTrainingScript {
     static final double MC_SCALE = 3.0      // phi window = scale*3°, theta window = scale*1°
     // Allowed hadron PIDs
     // Positive hadrons relevant for K+ analysis: π+ (signal contamination),
-    // K+ (target species), p (high-momentum K+ contamination via TOF).
-    // Negatives (π-, K-, p̄) intentionally dropped — Cooper's K+ analysis
-    // uses positive hadrons only. Negative-charge training is future work.
-    static final Set<Integer> HADRON_PIDS = [211, 321, 2212] as Set
+    // K+ (target species), p (high-momentum K+ contamination via TOF),
+    // deuteron (45, rare but EB-assigned), unidentified positive (0).
+    // pid=45 and pid=0 are included so that true K+ mislabeled by EB into
+    // those bins are captured in the denominator of ε_refine.
+    // pid=0 is additionally guarded by a charge>0 check at the hadron loop
+    // (see below) to exclude negative unidentified tracks.
+    // Positrons (+11) are excluded: EB never assigns pid=+11 to a true K+
+    // (HTCC threshold ~9 GeV/c, wrong calorimeter sampling fraction).
+    // Negatives (π-, K-, p̄) intentionally dropped — positive hadrons only.
+    static final Set<Integer> HADRON_PIDS = [211, 321, 2212, 45, 0] as Set
 
     // ── Stage 1: banks needed for the electron filter only ────────────────────
     // Called for every event. Cheap set — avoids loading expensive banks
@@ -637,6 +643,9 @@ public class PIDTrainingScript {
 
                     int pid = rec_bank.getInt("pid", row)
                     if (!HADRON_PIDS.contains(pid)) continue
+                    // For unidentified tracks (pid==0), require positive charge to
+                    // exclude negative unidentified tracks from the denominator.
+                    if (pid == 0 && rec_bank.getByte("charge", row) <= 0) continue
 
                     // ── Cut 1: FD-only + DC-fiducial ──────────────────────────
                     if (!passHadronCuts(row, banks)) continue
