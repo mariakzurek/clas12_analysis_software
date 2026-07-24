@@ -42,6 +42,8 @@ else if ($arg1 == "processing_scripts/processing_mc_pid_training.groovy") then
     set convert_arg3 = 7 # ML PID training ntuple
 else if ($arg1 == "processing_scripts/processing_data_pid_training.groovy") then
     set convert_arg3 = 8 # ML PID training ntuple (data)
+else if ($arg1 == "processing_scripts/check_pid0_cutflow.groovy") then
+    set convert_arg3 = -1 # diagnostic only — no convert step
 else
     echo "Error: unrecognized processing script: $arg1"
     exit 1
@@ -168,4 +170,7 @@ else if ($arg1 == "processing_scripts/processing_data_pid_training.groovy") then
     set txt_file = "$3.txt"
     set root_file = "$3.root"
     ./processing_scripts/convert_txt_to_root $txt_file $root_file $convert_arg3 $is_mc
+else if ($arg1 == "processing_scripts/check_pid0_cutflow.groovy") then
+    # Diagnostic script — runs directly, no arguments needed, no convert step.
+    coatjava/bin/run-groovy -cp processing_classes/dist/processing_classes.jar "$arg1"
 endif
