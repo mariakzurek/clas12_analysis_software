@@ -286,6 +286,16 @@ public class fiducial_cuts {
     public boolean dc_fiducial_cut(int particle_Index, HipoDataBank rec_Bank, HipoDataBank traj_Bank,
             HipoDataBank run_Bank) {
         int pid = rec_Bank.getInt("pid", particle_Index);
+        // For unrecognized PIDs (pid==0: unidentified; pid==45/-45: deuteron),
+        // derive an effective PID from charge for DC bending-direction inference only.
+        // This is NOT a species assumption — it is charge-based polarity assignment,
+        // using π+/π- as the surrogate because they are in the known-PID whitelist
+        // and have the correct sign. The actual species identity is preserved in
+        // rec_Bank and is not altered.
+        if (pid == 0 || pid == 45 || pid == -45) {
+            byte charge = rec_Bank.getByte("charge", particle_Index);
+            pid = (charge > 0) ? 211 : -211;
+        }
         // different cuts for inbending and outbending tracks
         int runnum = run_Bank.getInt("run", 0);
 //        boolean inbending = false;
